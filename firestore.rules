@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true || 
+         request.auth.token.email == 'indiafff568@gmail.com');
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Redeem codes collection
+    match /redeem_codes/{codeId} {
+      allow read: if request.auth != null;
+      allow create: if isAdmin();
+      allow update: if request.auth != null; // Allow users to mark as used
+      allow delete: if isAdmin();
+    }
+    
+    // Songs collection
+    match /songs/{songId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
