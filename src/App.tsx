@@ -2140,7 +2140,7 @@ export default function App() {
           const userDoc = await getDoc(userDocRef);
           
           let userData: User;
-          const isAdminEmail = firebaseUser.email === 'indiafff568@gmail.com';
+          const isAdminEmail = firebaseUser.email === 'indiafff568@gmail.com' || firebaseUser.email === 'gtxnvme@gmail.com';
 
           if (userDoc.exists()) {
             const data = userDoc.data();
@@ -2154,7 +2154,6 @@ export default function App() {
             }
 
             // SAFETY FIX: If subscription is absurdly long (e.g., > 10 years), reset it to 30 days.
-            // 36499d is exactly 100 years, which indicates a bug in calculation or data.
             const tenYears = 10 * 365 * 24 * 60 * 60 * 1000;
             if (subEndsAt && subEndsAt > Date.now() + tenYears) {
               console.warn("Absurdly long subscription detected, resetting to 30 days:", subEndsAt);
@@ -2162,41 +2161,42 @@ export default function App() {
               updateDoc(userDocRef, { subscriptionEndsAt: subEndsAt });
             }
 
+            // TRIAL FIX: If no active subscription, grant a 30-day trial automatically
+            if (!data.subscription || data.subscription === 'none' || !subEndsAt || subEndsAt < Date.now()) {
+              const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+              subEndsAt = Date.now() + thirtyDays;
+              updateDoc(userDocRef, { 
+                subscription: 'pro', 
+                subscriptionEndsAt: subEndsAt 
+              });
+              data.subscription = 'pro';
+            }
+
             userData = {
               id: firebaseUser.uid,
               email: firebaseUser.email || '',
-              subscription: data.subscription || 'none',
+              subscription: data.subscription || 'pro',
               subscriptionEndsAt: subEndsAt,
               isAdmin: data.isAdmin || isAdminEmail,
               playlists: data.playlists || []
             };
 
-            // Auto-grant admin and 1 minute subscription to the specified user for testing
-            if (isAdminEmail) {
-              const oneMinute = 60 * 1000;
-              const newEndsAt = Date.now() + oneMinute;
-              
-              // Only update if it's not already set to something in the future
-              if (!data.isAdmin || !data.subscriptionEndsAt || data.subscriptionEndsAt < Date.now() + 1000) {
-                await updateDoc(userDocRef, {
-                  isAdmin: true,
-                  subscription: 'pro',
-                  subscriptionEndsAt: newEndsAt
-                });
-                
-                userData.isAdmin = true;
-                userData.subscription = 'pro';
-                userData.subscriptionEndsAt = newEndsAt;
-                toast.success("Admin privileges and 1-minute Pro subscription granted for testing!");
-              }
+            // Auto-grant admin privileges if not already set
+            if (isAdminEmail && !data.isAdmin) {
+              await updateDoc(userDocRef, {
+                isAdmin: true
+              });
+              userData.isAdmin = true;
+              toast.success("Admin privileges granted!");
             }
           } else {
-            // Fallback if doc doesn't exist yet
+            // Fallback if doc doesn't exist yet - Grant 30-day trial by default
+            const thirtyDays = 30 * 24 * 60 * 60 * 1000;
             userData = {
               id: firebaseUser.uid,
               email: firebaseUser.email || '',
-              subscription: isAdminEmail ? 'pro' : 'none',
-              subscriptionEndsAt: isAdminEmail ? Date.now() + (60 * 1000) : undefined,
+              subscription: 'pro',
+              subscriptionEndsAt: Date.now() + thirtyDays,
               isAdmin: isAdminEmail,
               playlists: []
             };
@@ -2210,9 +2210,7 @@ export default function App() {
               createdAt: serverTimestamp()
             });
             
-            if (isAdminEmail) {
-              toast.success("Admin account created with 1-month Pro subscription!");
-            }
+            toast.success("Welcome! You've been granted a 30-day Pro trial.");
           }
           setUser(userData);
         } catch (error) {
