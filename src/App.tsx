@@ -306,12 +306,20 @@ const Player = ({
   const isPro = user?.subscription === 'pro';
 
   return (
-    <div className="fixed bottom-0 md:bottom-0 left-0 right-0 bg-zinc-900/90 backdrop-blur-xl border-t border-white/5 px-4 py-3 md:px-6 md:py-4 flex flex-col gap-2 z-40 mb-[60px] md:mb-0">
+    <div className="fixed bottom-0 left-0 right-0 bg-zinc-900/90 backdrop-blur-xl border-t border-white/5 px-4 py-3 md:px-6 md:py-4 flex flex-col gap-2 z-40 mb-[60px] md:mb-0">
       <audio 
         ref={audioRef} 
         onTimeUpdate={handleTimeUpdate} 
         onEnded={onNext}
       />
+      
+      {/* Mobile Progress Bar */}
+      <div className="md:hidden absolute top-0 left-0 right-0 h-[2px] bg-zinc-800">
+        <div 
+          className="h-full bg-netflix-red transition-all duration-100" 
+          style={{ width: `${progress}%` }}
+        />
+      </div>
       
       <div className="flex items-center justify-between">
         {/* Song Info */}
@@ -1481,9 +1489,17 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onAddToPlaylist }: {
   );
 };
 
-const SettingsPage = ({ user, onUpdateSub }: { user: User | null; onUpdateSub: (type: SubscriptionType, endsAt?: number) => void }) => {
+const SettingsPage = ({ user, onUpdateSub, onLogout, onRefresh }: { user: User | null; onUpdateSub: (type: SubscriptionType, endsAt?: number) => void; onLogout: () => void; onRefresh: () => Promise<void> }) => {
   const [redeemCode, setRedeemCode] = useState('');
   const [isRedeeming, setIsRedeeming] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await onRefresh();
+    setIsRefreshing(false);
+    toast.success('Subscription status updated!');
+  };
 
   const handleRedeem = async () => {
     if (!redeemCode.trim()) return toast.error('Please enter a code');
@@ -1545,14 +1561,23 @@ const SettingsPage = ({ user, onUpdateSub }: { user: User | null; onUpdateSub: (
         <section>
           <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4">Account Profile</h2>
           <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6">
-            <div className="flex items-center gap-4 mb-8">
-              <div className="w-16 h-16 bg-netflix-red rounded-full flex items-center justify-center text-2xl font-bold">
-                {user?.email[0].toUpperCase()}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 bg-netflix-red rounded-full flex items-center justify-center text-2xl font-bold">
+                  {user?.email[0].toUpperCase()}
+                </div>
+                <div>
+                  <h3 className="font-bold text-xl truncate max-w-[200px] md:max-w-none">{user?.email}</h3>
+                  <p className="text-sm text-zinc-500">Member since 2024</p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-bold text-xl">{user?.email}</h3>
-                <p className="text-sm text-zinc-500">Member since 2024</p>
-              </div>
+              <button 
+                onClick={onLogout}
+                className="flex items-center justify-center gap-2 px-6 py-2 border border-white/10 rounded-full text-sm font-bold hover:bg-white/5 transition-colors text-zinc-400 hover:text-white"
+              >
+                <LogOut size={16} />
+                Logout
+              </button>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1573,7 +1598,17 @@ const SettingsPage = ({ user, onUpdateSub }: { user: User | null; onUpdateSub: (
               {user?.subscriptionEndsAt && (
                 <div className="space-y-1">
                   <p className="text-[10px] text-zinc-500 uppercase font-bold">Time Remaining</p>
-                  <CountdownTimer endsAt={user.subscriptionEndsAt} />
+                  <div className="flex items-center gap-3">
+                    <CountdownTimer endsAt={user.subscriptionEndsAt} />
+                    <button 
+                      onClick={handleRefresh}
+                      disabled={isRefreshing}
+                      className="p-1 text-zinc-500 hover:text-white transition-colors"
+                      title="Refresh Status"
+                    >
+                      <RefreshCw size={14} className={cn(isRefreshing && "animate-spin")} />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2279,6 +2314,9 @@ export default function App() {
   const isSubscribed = () => {
     if (!user) return false;
     const endsAt = typeof user.subscriptionEndsAt === 'number' ? user.subscriptionEndsAt : 0;
+    // Safety check: if subscription is 'pro' or 'plus' but endsAt is missing, it might be a legacy account.
+    // We'll trust the subscription type for now if endsAt is missing but type is set.
+    if (user.subscription !== 'none' && !user.subscriptionEndsAt) return true;
     return user.subscription !== 'none' && endsAt > Date.now();
   };
 
@@ -2574,7 +2612,7 @@ export default function App() {
           <Route path="/search" element={<SearchPage songs={songs} onPlay={handlePlay} user={user} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
           <Route path="/library" element={<LibraryPage user={user} onPlay={handlePlay} onCreatePlaylist={handleCreatePlaylist} onUpdatePlaylist={handleUpdatePlaylist} onRefresh={handleRefreshSongs} onRefreshUser={handleRefreshUser} />} />
           <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
-          <Route path="/settings" element={<SettingsPage user={user} onUpdateSub={handleUpdateSub} />} />
+          <Route path="/settings" element={<SettingsPage user={user} onUpdateSub={handleUpdateSub} onLogout={handleLogout} onRefresh={handleRefreshUser} />} />
           <Route path="/admin" element={<AdminPage user={user} songs={songs} onRefreshSongs={handleRefreshSongs} />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
