@@ -1686,6 +1686,7 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
   const [songDetails, setSongDetails] = useState({ title: '', artist: '' });
   const [isUploading, setIsUploading] = useState(false);
   const [editingSongId, setEditingSongId] = useState<string | null>(null);
+  const [songToDelete, setSongToDelete] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.isAdmin) return;
@@ -1787,10 +1788,10 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
   };
 
   const handleDeleteSong = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this song?")) return;
     try {
       await deleteDoc(doc(db, 'songs', id));
       toast.success("Song deleted");
+      setSongToDelete(null);
       onRefreshSongs();
     } catch (error) {
       toast.error("Failed to delete song");
@@ -2151,20 +2152,39 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                     <div className="flex items-center gap-2">
                       {!isMock && (
                         <>
-                          <button 
-                            onClick={() => handleEditSong(song)}
-                            className="p-2 text-zinc-500 hover:text-white transition-colors"
-                            title="Edit Song"
-                          >
-                            <Edit2 size={18} />
-                          </button>
-                          <button 
-                            onClick={() => handleDeleteSong(song.id)}
-                            className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
-                            title="Delete Song"
-                          >
-                            <Trash2 size={18} />
-                          </button>
+                          {songToDelete === song.id ? (
+                            <div className="flex items-center gap-1">
+                              <button 
+                                onClick={() => handleDeleteSong(song.id)}
+                                className="px-2 py-1 bg-netflix-red text-white text-[10px] font-bold rounded"
+                              >
+                                Confirm
+                              </button>
+                              <button 
+                                onClick={() => setSongToDelete(null)}
+                                className="px-2 py-1 bg-zinc-800 text-zinc-400 text-[10px] font-bold rounded"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button 
+                                onClick={() => handleEditSong(song)}
+                                className="p-2 text-zinc-500 hover:text-white transition-colors"
+                                title="Edit Song"
+                              >
+                                <Edit2 size={18} />
+                              </button>
+                              <button 
+                                onClick={() => setSongToDelete(song.id)}
+                                className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
+                                title="Delete Song"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </>
+                          )}
                         </>
                       )}
                     </div>
