@@ -1398,11 +1398,12 @@ const LibraryPage = ({
   );
 };
 
-const DownloadsPage = ({ user, onPlay, songs, onDownload, onAddToPlaylist }: { 
+const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAddToPlaylist }: { 
   user: User | null; 
   onPlay: (song: Song) => void; 
   songs: Song[];
   onDownload: (song: Song) => void;
+  onRemoveDownload: (songId: string) => void;
   onAddToPlaylist: (song: Song) => void;
 }) => {
   const isPro = user?.subscription === 'pro';
@@ -1452,6 +1453,13 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onAddToPlaylist }: {
                       className="p-2 text-zinc-400 hover:text-white"
                     >
                       <Play size={20} fill="currentColor" />
+                    </button>
+                    <button 
+                      onClick={() => onRemoveDownload(song.id)}
+                      className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
+                      title="Remove Download"
+                    >
+                      <Trash2 size={18} />
                     </button>
                     <button 
                       onClick={() => onAddToPlaylist(song)}
@@ -2445,6 +2453,28 @@ export default function App() {
     }
   };
 
+  const handleRemoveDownload = async (songId: string) => {
+    if (!user) return;
+    
+    try {
+      const song = songs.find(s => s.id === songId);
+      if (song) {
+        const cache = await caches.open('sonik-offline-songs');
+        await cache.delete(song.url);
+      }
+
+      const userDocRef = doc(db, 'users', user.id);
+      const updatedDownloads = (user.downloads || []).filter(id => id !== songId);
+      
+      await updateDoc(userDocRef, { downloads: updatedDownloads });
+      setUser({ ...user, downloads: updatedDownloads });
+      toast.success("Download removed from offline storage");
+    } catch (error) {
+      console.error("Error removing download:", error);
+      toast.error("Failed to remove download");
+    }
+  };
+
   const handleAddToPlaylist = async (playlistId: string, song: Song) => {
     if (!user) return;
     if (!isSubscribed()) {
@@ -2624,7 +2654,7 @@ export default function App() {
           <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
           <Route path="/search" element={<SearchPage songs={songs} onPlay={handlePlay} user={user} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
           <Route path="/library" element={<LibraryPage user={user} onPlay={handlePlay} onCreatePlaylist={handleCreatePlaylist} onUpdatePlaylist={handleUpdatePlaylist} onRefresh={handleRefreshSongs} onRefreshUser={handleRefreshUser} />} />
-          <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
+          <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onRemoveDownload={handleRemoveDownload} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
           <Route path="/settings" element={<SettingsPage user={user} onUpdateSub={handleUpdateSub} onLogout={handleLogout} onRefresh={handleRefreshUser} />} />
           <Route path="/admin" element={<AdminPage user={user} songs={songs} onRefreshSongs={handleRefreshSongs} />} />
           <Route path="*" element={<Navigate to="/" />} />
