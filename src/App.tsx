@@ -15,6 +15,7 @@ import {
   SkipBack, 
   SkipForward, 
   Volume2, 
+  Volume1,
   VolumeX,
   Download,
   Share2,
@@ -30,7 +31,12 @@ import {
   Edit2,
   Users,
   MoreVertical,
-  WifiOff
+  WifiOff,
+  Minimize2,
+  Maximize2,
+  GripVertical,
+  Sparkles,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'react-hot-toast';
@@ -165,6 +171,27 @@ const Sidebar = ({ user, onLogout }: { user: User | null; onLogout: () => void }
   );
 };
 
+const MobileHeader = ({ user }: { user: User | null }) => {
+  return (
+    <div className="md:hidden flex items-center justify-between px-6 py-4 bg-black/50 backdrop-blur-md sticky top-0 z-40 border-b border-white/5">
+      <div className="flex items-center gap-2">
+        <div className="w-8 h-8 bg-netflix-red rounded-full flex items-center justify-center">
+          <span className="font-bold text-xl">S</span>
+        </div>
+        <h1 className="text-xl font-bold tracking-tighter text-netflix-red">SONIK</h1>
+      </div>
+      <Link to="/settings">
+        <div 
+          className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-lg border border-white/10"
+          style={{ backgroundColor: user?.profileColor || '#E50914' }}
+        >
+          {user?.email[0].toUpperCase()}
+        </div>
+      </Link>
+    </div>
+  );
+};
+
 const MobileNav = () => {
   const location = useLocation();
   const navItems = [
@@ -201,6 +228,7 @@ const Player = ({
   onNext, 
   onPrev,
   onClose,
+  onDownload,
   user
 }: { 
   currentSong: Song | null; 
@@ -209,25 +237,101 @@ const Player = ({
   onNext: () => void;
   onPrev: () => void;
   onClose: () => void;
+  onDownload: (song: Song) => void;
   user: User | null;
 }) => {
-  const [volume, setVolume] = useState(0.5);
+  const [volume, setVolume] = useState(user?.defaultVolume || 0.5);
+  const [boost, setBoost] = useState(user?.aiBoostMode === 'always' ? 2.5 : 1.0);
   const [isMuted, setIsMuted] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [isMini, setIsMini] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const highShelfRef = useRef<BiquadFilterNode | null>(null);
+  const lowCutRef = useRef<BiquadFilterNode | null>(null);
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
 
+  const isPro = user?.subscription === 'pro';
   const isSubscribed = user?.subscription !== 'none' && user?.subscriptionEndsAt && user.subscriptionEndsAt > Date.now();
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : volume;
+    if (user?.defaultVolume !== undefined) {
+      setVolume(user.defaultVolume);
     }
-  }, [volume, isMuted]);
+  }, [user?.defaultVolume]);
+
+  useEffect(() => {
+    if (user?.aiBoostMode === 'always') {
+      setBoost(2.5);
+    } else if (user?.aiBoostMode === 'off') {
+      setBoost(1.0);
+    }
+  }, [user?.aiBoostMode]);
+
+  useEffect(() => {
+    if (audioRef.current && !audioCtxRef.current) {
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        audioCtxRef.current = new AudioContextClass();
+        gainNodeRef.current = audioCtxRef.current.createGain();
+        
+        // High-shelf for clarity
+        highShelfRef.current = audioCtxRef.current.createBiquadFilter();
+        highShelfRef.current.type = 'highshelf';
+        highShelfRef.current.frequency.value = 3000;
+        highShelfRef.current.gain.value = user?.cleanAudio ? 8 : 0;
+
+        // Low-cut for rumble/noise reduction
+        lowCutRef.current = audioCtxRef.current.createBiquadFilter();
+        lowCutRef.current.type = 'highpass';
+        lowCutRef.current.frequency.value = 100;
+        // We only enable low-cut if cleanAudio is on
+        // Note: highpass doesn't have a gain property that works like highshelf
+        // We will bypass it by setting frequency to 0 if cleanAudio is off
+
+        sourceRef.current = audioCtxRef.current.createMediaElementSource(audioRef.current);
+        
+        sourceRef.current.connect(lowCutRef.current);
+        lowCutRef.current.connect(highShelfRef.current);
+        highShelfRef.current.connect(gainNodeRef.current);
+        gainNodeRef.current.connect(audioCtxRef.current.destination);
+      } catch (e) {
+        console.error("Web Audio API not supported", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (highShelfRef.current && lowCutRef.current) {
+      highShelfRef.current.gain.value = user?.cleanAudio ? 8 : 0;
+      lowCutRef.current.frequency.value = user?.cleanAudio ? 100 : 0;
+    }
+  }, [user?.cleanAudio]);
+
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = isMuted ? 0 : volume * boost;
+    }
+    // Fallback for browsers without Web Audio or if it fails
+    if (audioRef.current && !audioCtxRef.current) {
+      audioRef.current.volume = isMuted ? 0 : Math.min(volume, 1.0);
+    }
+  }, [volume, boost, isMuted]);
+
+  useEffect(() => {
+    if (audioCtxRef.current && isPlaying && audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume();
+    }
+  }, [isPlaying]);
 
   useEffect(() => {
     const loadAudio = async () => {
       if (currentSong && audioRef.current) {
         try {
+          // Reset progress
+          setProgress(0);
+          
           // Check if song is in offline cache
           const cache = await caches.open('sonik-offline-songs');
           const cachedResponse = await cache.match(currentSong.url);
@@ -241,19 +345,15 @@ const Player = ({
             audioRef.current.src = currentSong.url;
           }
 
-          if (isPlaying) {
-            const playPromise = audioRef.current.play();
-            if (playPromise !== undefined) {
-              playPromise.catch(e => {
-                if (e.name !== 'AbortError') {
-                  console.error("Playback failed", e);
-                }
-              });
-            }
-          }
+          // Force load the new source
+          audioRef.current.load();
+
+          // We don't call play() here anymore, the isPlaying effect will handle it
+          // once the source is loaded and isPlaying is true.
         } catch (error) {
           console.error("Error loading audio:", error);
           audioRef.current.src = currentSong.url;
+          audioRef.current.load();
         }
       }
     };
@@ -271,19 +371,33 @@ const Player = ({
   useEffect(() => {
     if (audioRef.current) {
       if (isPlaying) {
-        const playPromise = audioRef.current.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(e => {
-            if (e.name !== 'AbortError') {
-              console.error("Playback failed", e);
-            }
-          });
+        // Use a small delay to ensure the src is set and loaded
+        const playAudio = () => {
+          const playPromise = audioRef.current?.play();
+          if (playPromise !== undefined) {
+            playPromise.catch(e => {
+              if (e.name !== 'AbortError') {
+                console.error("Playback failed:", e.message);
+                // If it fails, try to load again and play
+                audioRef.current?.load();
+              }
+            });
+          }
+        };
+
+        if (audioRef.current.readyState >= 2) {
+          playAudio();
+        } else {
+          audioRef.current.oncanplay = () => {
+            playAudio();
+            if (audioRef.current) audioRef.current.oncanplay = null;
+          };
         }
       } else {
         audioRef.current.pause();
       }
     }
-  }, [isPlaying]);
+  }, [isPlaying, currentSong]);
 
   const handleTimeUpdate = () => {
     if (audioRef.current && audioRef.current.duration) {
@@ -304,124 +418,322 @@ const Player = ({
 
   if (!currentSong) return null;
 
-  const isPro = user?.subscription === 'pro';
-
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-zinc-900/90 backdrop-blur-xl border-t border-white/5 px-4 py-3 md:px-6 md:py-4 flex flex-col gap-2 z-40 mb-[60px] md:mb-0">
+    <motion.div 
+      layout
+      drag={isMini}
+      dragConstraints={{ left: 0, right: window.innerWidth - 300, top: 0, bottom: window.innerHeight - 100 }}
+      dragElastic={0.1}
+      dragMomentum={false}
+      initial={false}
+      className={cn(
+        "fixed z-50 transition-all duration-300",
+        isMini 
+          ? "w-[280px] h-[80px] bg-zinc-900/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl p-2 cursor-move right-4 bottom-20 md:bottom-4" 
+          : "bottom-0 left-0 right-0 bg-zinc-900/90 backdrop-blur-xl border-t border-white/5 px-4 py-3 md:px-6 md:py-4 mb-[60px] md:mb-0"
+      )}
+    >
       <audio 
         ref={audioRef} 
         onTimeUpdate={handleTimeUpdate} 
         onEnded={onNext}
+        onError={(e) => {
+          const target = e.target as HTMLAudioElement;
+          console.error("Audio Error:", target.error);
+          if (target.error?.code === 4) {
+            toast.error("Format not supported or link expired. Try refreshing.");
+          }
+        }}
+        preload="auto"
       />
       
-      {/* Mobile Progress Bar */}
-      <div className="md:hidden absolute top-0 left-0 right-0 h-[2px] bg-zinc-800">
-        <div 
-          className="h-full bg-netflix-red transition-all duration-100" 
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      
-      <div className="flex items-center justify-between">
-        {/* Song Info */}
-        <div className="flex items-center gap-3 w-1/3">
+      {isMini ? (
+        <div className="flex items-center gap-3 h-full relative group">
+          <div className="absolute -top-2 -left-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="p-1 bg-zinc-800 rounded-full cursor-grab active:cursor-grabbing">
+              <GripVertical size={12} className="text-zinc-500" />
+            </div>
+          </div>
+          
           <img 
             src={currentSong.thumbnail} 
             alt={currentSong.title} 
-            className="w-12 h-12 rounded object-cover shadow-lg"
+            className="w-12 h-12 rounded-lg object-cover shadow-lg flex-shrink-0"
             referrerPolicy="no-referrer"
           />
-          <div className="overflow-hidden">
-            <div className="flex items-center gap-2">
-              <h4 className="text-sm font-semibold truncate flex-1">{currentSong.title}</h4>
-              {user?.downloads?.includes(currentSong.id) && (
-                <WifiOff size={12} className="text-emerald-500 flex-shrink-0" title="Playing offline" />
-              )}
+          
+          <div className="flex-1 min-w-0">
+            <h4 className="text-xs font-semibold truncate pr-6">{currentSong.title}</h4>
+            <p className="text-[10px] text-zinc-400 truncate">{currentSong.artist}</p>
+            <div className="flex items-center gap-3 mt-1">
+              <button onClick={onPrev} className="text-zinc-400 hover:text-white transition-colors">
+                <SkipBack size={14} fill="currentColor" />
+              </button>
+              <button 
+                onClick={onTogglePlay}
+                className="w-6 h-6 bg-white text-black rounded-full flex items-center justify-center hover:scale-110 transition-transform"
+              >
+                {isPlaying ? <Pause size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" className="ml-0.5" />}
+              </button>
+              <button onClick={onNext} className="text-zinc-400 hover:text-white transition-colors">
+                <SkipForward size={14} fill="currentColor" />
+              </button>
             </div>
-            <p className="text-xs text-zinc-400 truncate">{currentSong.artist}</p>
           </div>
-        </div>
 
-        {/* Controls */}
-        <div className="flex flex-col items-center gap-2 flex-1">
-          <div className="flex items-center gap-6">
-            <button onClick={onPrev} className="text-zinc-400 hover:text-white transition-colors">
-              <SkipBack size={20} fill="currentColor" />
+          <div className="flex flex-col gap-1">
+            {isPro && (
+              <button 
+                onClick={() => {
+                  if (user?.aiBoostMode === 'off') {
+                    toast.error("AI Boost is disabled in settings");
+                    return;
+                  }
+                  setBoost(boost === 1 ? 2.5 : 1);
+                }}
+                disabled={user?.aiBoostMode === 'off'}
+                className={cn(
+                  "p-1.5 rounded-lg transition-all",
+                  boost > 1 ? "text-amber-400 bg-amber-400/10" : "text-zinc-500 hover:text-white",
+                  user?.aiBoostMode === 'off' && "opacity-20 cursor-not-allowed"
+                )}
+                title={user?.aiBoostMode === 'off' ? "AI Boost Disabled" : `AI Boost: ${Math.round(boost * 100)}%`}
+              >
+                <Zap size={14} fill={boost > 1 ? "currentColor" : "none"} />
+              </button>
+            )}
+            <button 
+              onClick={() => setIsMini(false)}
+              className="p-1.5 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-all"
+              title="Expand"
+            >
+              <Maximize2 size={14} />
             </button>
             <button 
-              onClick={onTogglePlay}
-              className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center hover:scale-105 transition-transform"
+              onClick={onClose}
+              className="p-1.5 text-zinc-400 hover:text-netflix-red hover:bg-red-500/10 rounded-lg transition-all"
+              title="Close"
             >
-              {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-1" />}
-            </button>
-            <button onClick={onNext} className="text-zinc-400 hover:text-white transition-colors">
-              <SkipForward size={20} fill="currentColor" />
+              <X size={14} />
             </button>
           </div>
-          
-          <div className="hidden md:flex items-center gap-2 w-full max-w-md">
-            <span className="text-[10px] text-zinc-500 w-8 text-right">
-              {Math.floor((audioRef.current?.currentTime || 0) / 60)}:
-              {String(Math.floor((audioRef.current?.currentTime || 0) % 60)).padStart(2, '0')}
-            </span>
-            <input 
-              type="range" 
-              value={isNaN(progress) ? 0 : progress} 
-              onChange={handleSeek}
-              className="flex-1 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-netflix-red"
+
+          <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-zinc-800 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-netflix-red transition-all duration-100" 
+              style={{ width: `${progress}%` }}
             />
-            <span className="text-[10px] text-zinc-500 w-8">
-              {Math.floor((audioRef.current?.duration && !isNaN(audioRef.current.duration) ? audioRef.current.duration : 0) / 60)}:
-              {String(Math.floor((audioRef.current?.duration && !isNaN(audioRef.current.duration) ? audioRef.current.duration : 0) % 60)).padStart(2, '0')}
-            </span>
           </div>
         </div>
-
-        {/* Extra Controls */}
-        <div className="flex items-center justify-end gap-4 w-1/3">
-          <div className="hidden md:flex items-center gap-2">
-            <button onClick={() => setIsMuted(!isMuted)} className="text-zinc-400 hover:text-white">
-              {isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-            </button>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {/* Mobile Seekable Progress Bar */}
+          <div className="md:hidden absolute top-0 left-0 right-0 h-[4px] bg-zinc-800">
             <input 
               type="range" 
               min="0" 
-              max="1" 
-              step="0.01" 
-              value={volume} 
-              onChange={(e) => setVolume(Number(e.target.value))}
-              className="w-20 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-white"
+              max="100"
+              value={isNaN(progress) ? 0 : progress} 
+              onChange={handleSeek}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+            />
+            <div 
+              className="h-full bg-netflix-red transition-all duration-100" 
+              style={{ width: `${progress}%` }}
             />
           </div>
           
-          {isPro && (
-            <button 
-              onClick={() => toast.success('Downloading song...')}
-              className="text-zinc-400 hover:text-white transition-colors"
-            >
-              <Download size={18} />
-            </button>
-          )}
-          
-          {isPro && (
-            <button 
-              onClick={() => toast.success('Link copied to clipboard!')}
-              className="text-zinc-400 hover:text-white transition-colors"
-            >
-              <Share2 size={18} />
-            </button>
-          )}
+          <div className="flex items-center justify-between">
+            {/* Song Info */}
+            <div className="flex flex-col w-full md:w-1/3">
+              <div className="flex items-center gap-3 w-full">
+                <img 
+                  src={currentSong.thumbnail} 
+                  alt={currentSong.title} 
+                  className="w-10 h-10 md:w-12 md:h-12 rounded object-cover shadow-lg"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="overflow-hidden flex-1">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs md:text-sm font-semibold truncate flex-1">{currentSong.title}</h4>
+                    {user?.downloads?.includes(currentSong.id) && (
+                      <WifiOff size={12} className="text-emerald-500 flex-shrink-0" title="Playing offline" />
+                    )}
+                  </div>
+                  <p className="text-[10px] md:text-xs text-zinc-400 truncate">{currentSong.artist}</p>
+                </div>
+                
+                {/* Mobile Only Main Controls - AI Boost replaced with Volume Up/Down */}
+                <div className="flex md:hidden items-center gap-1">
+                  <button 
+                    onClick={() => setVolume(Math.max(0, volume - 0.1))}
+                    className="p-2 text-zinc-400 hover:text-white"
+                    title="Volume Down"
+                  >
+                    <Volume1 size={18} />
+                  </button>
+                  <button 
+                    onClick={() => setVolume(Math.min(2.5, volume + 0.1))}
+                    className="p-2 text-zinc-400 hover:text-white"
+                    title="Volume Up"
+                  >
+                    <Volume2 size={18} />
+                  </button>
+                  <button 
+                    onClick={onTogglePlay}
+                    className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center shadow-lg mx-1"
+                  >
+                    {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+                  </button>
+                  <button onClick={onNext} className="text-zinc-400 p-2">
+                    <SkipForward size={20} fill="currentColor" />
+                  </button>
+                </div>
+              </div>
 
-          <button 
-            onClick={onClose}
-            className="text-zinc-400 hover:text-netflix-red transition-colors ml-2"
-            title="Close Player"
-          >
-            <X size={20} />
-          </button>
+              {/* Mobile Volume Slider (Keeping it for precise control, but user asked for buttons above) */}
+              <div className="flex md:hidden items-center gap-2 mt-3 px-1">
+                <div className="flex-1 relative flex items-center h-4">
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="2.5" 
+                    step="0.01" 
+                    value={volume} 
+                    onChange={(e) => setVolume(Number(e.target.value))}
+                    className="w-full h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-white"
+                  />
+                  <div 
+                    className="absolute -top-4 left-1/2 -translate-x-1/2 text-[8px] font-bold text-zinc-500 bg-black/50 px-1 rounded pointer-events-none"
+                  >
+                    Volume: {Math.round(volume * 100)}%
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Desktop Controls */}
+            <div className="hidden md:flex flex-col items-center gap-2 flex-1">
+              <div className="flex items-center gap-6">
+                <button onClick={onPrev} className="text-zinc-400 hover:text-white transition-colors">
+                  <SkipBack size={20} fill="currentColor" />
+                </button>
+                <button 
+                  onClick={onTogglePlay}
+                  className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center hover:scale-105 transition-transform"
+                >
+                  {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-1" />}
+                </button>
+                <button onClick={onNext} className="text-zinc-400 hover:text-white transition-colors">
+                  <SkipForward size={20} fill="currentColor" />
+                </button>
+              </div>
+              
+              <div className="hidden md:flex items-center gap-2 w-full max-w-md">
+                <span className="text-[10px] text-zinc-500 w-8 text-right">
+                  {Math.floor((audioRef.current?.currentTime || 0) / 60)}:
+                  {String(Math.floor((audioRef.current?.currentTime || 0) % 60)).padStart(2, '0')}
+                </span>
+                <input 
+                  type="range" 
+                  value={isNaN(progress) ? 0 : progress} 
+                  onChange={handleSeek}
+                  className="flex-1 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-netflix-red"
+                />
+                <span className="text-[10px] text-zinc-500 w-8">
+                  {Math.floor((audioRef.current?.duration && !isNaN(audioRef.current.duration) ? audioRef.current.duration : 0) / 60)}:
+                  {String(Math.floor((audioRef.current?.duration && !isNaN(audioRef.current.duration) ? audioRef.current.duration : 0) % 60)).padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+
+            {/* Desktop Extra Controls */}
+            <div className="hidden md:flex items-center justify-end gap-4 w-1/3">
+              <div className="hidden md:flex items-center gap-2">
+                <button onClick={() => setIsMuted(!isMuted)} className="text-zinc-400 hover:text-white">
+                  {isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                </button>
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="1" 
+                  step="0.01" 
+                  value={volume} 
+                  onChange={(e) => setVolume(Number(e.target.value))}
+                  className="w-20 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-white"
+                />
+              </div>
+              
+              <div className="flex items-center gap-1 bg-zinc-800/50 rounded-full px-2 py-1 border border-white/5">
+                <button 
+                  onClick={() => {
+                    if (!isPro) {
+                      toast.error("AI Sound Boost is a Pro feature!");
+                      return;
+                    }
+                    if (user?.aiBoostMode === 'off') {
+                      toast.error("AI Boost is disabled in settings");
+                      return;
+                    }
+                    setBoost(boost === 1 ? 2.5 : 1);
+                    if (boost === 1) toast.success("AI Sound Boost Activated (250%)!");
+                  }}
+                  disabled={user?.aiBoostMode === 'off'}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all",
+                    boost > 1 
+                      ? "bg-amber-500 text-black shadow-[0_0_10px_rgba(245,158,11,0.5)]" 
+                      : "text-zinc-400 hover:text-white",
+                    user?.aiBoostMode === 'off' && "opacity-20 cursor-not-allowed"
+                  )}
+                >
+                  <Sparkles size={12} className={cn(boost > 1 && "animate-pulse")} />
+                  {boost > 1 ? "250% BOOST" : "AI BOOST"}
+                </button>
+              </div>
+
+              <button 
+                onClick={() => setIsMini(true)}
+                className="text-zinc-400 hover:text-white transition-colors"
+                title="Mini Player"
+              >
+                <Minimize2 size={18} />
+              </button>
+
+              {isPro && (
+                <button 
+                  onClick={() => onDownload(currentSong)}
+                  className={cn(
+                    "transition-colors",
+                    user?.downloads?.includes(currentSong.id) ? "text-emerald-500" : "text-zinc-400 hover:text-white"
+                  )}
+                  title={user?.downloads?.includes(currentSong.id) ? "Downloaded" : "Download for offline"}
+                >
+                  <Download size={18} />
+                </button>
+              )}
+              
+              {isPro && (
+                <button 
+                  onClick={() => toast.success('Link copied to clipboard!')}
+                  className="text-zinc-400 hover:text-white transition-colors"
+                >
+                  <Share2 size={18} />
+                </button>
+              )}
+
+              <button 
+                onClick={onClose}
+                className="text-zinc-400 hover:text-netflix-red transition-colors ml-2"
+                title="Close Player"
+              >
+                <X size={20} />
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+    </motion.div>
   );
 };
 
@@ -656,19 +968,32 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
           subscription: data.subscription || 'plus',
-          playlists: data.playlists || []
+          playlists: data.playlists || [],
+          defaultVolume: data.defaultVolume ?? 0.5,
+          aiBoostMode: data.aiBoostMode || 'manual',
+          cleanAudio: data.cleanAudio ?? false,
+          profileColor: data.profileColor || `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`
         };
       } else {
+        const randomColor = `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`;
         userData = {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
           subscription: 'plus',
-          playlists: []
+          playlists: [],
+          defaultVolume: 0.5,
+          aiBoostMode: 'manual',
+          cleanAudio: false,
+          profileColor: randomColor
         };
         await setDoc(userDocRef, {
           email: userData.email,
           subscription: userData.subscription,
           playlists: userData.playlists,
+          defaultVolume: userData.defaultVolume,
+          aiBoostMode: userData.aiBoostMode,
+          cleanAudio: userData.cleanAudio,
+          profileColor: userData.profileColor,
           createdAt: serverTimestamp()
         });
       }
@@ -702,19 +1027,32 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
           subscription: data.subscription || 'plus',
-          playlists: data.playlists || []
+          playlists: data.playlists || [],
+          defaultVolume: data.defaultVolume ?? 0.5,
+          aiBoostMode: data.aiBoostMode || 'manual',
+          cleanAudio: data.cleanAudio ?? false,
+          profileColor: data.profileColor || `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`
         };
       } else {
+        const randomColor = `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`;
         userData = {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
           subscription: 'plus',
-          playlists: []
+          playlists: [],
+          defaultVolume: 0.5,
+          aiBoostMode: 'manual',
+          cleanAudio: false,
+          profileColor: randomColor
         };
         await setDoc(userDocRef, {
           email: userData.email,
           subscription: userData.subscription,
           playlists: userData.playlists,
+          defaultVolume: userData.defaultVolume,
+          aiBoostMode: userData.aiBoostMode,
+          cleanAudio: userData.cleanAudio,
+          profileColor: userData.profileColor,
           createdAt: serverTimestamp()
         });
       }
@@ -1519,7 +1857,19 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAd
   );
 };
 
-const SettingsPage = ({ user, onUpdateSub, onLogout, onRefresh }: { user: User | null; onUpdateSub: (type: SubscriptionType, endsAt?: number) => void; onLogout: () => void; onRefresh: () => Promise<void> }) => {
+const SettingsPage = ({ 
+  user, 
+  onUpdateSub, 
+  onLogout, 
+  onRefresh,
+  onUpdateSettings
+}: { 
+  user: User | null; 
+  onUpdateSub: (type: SubscriptionType, endsAt?: number) => void; 
+  onLogout: () => void; 
+  onRefresh: () => Promise<void>;
+  onUpdateSettings: (settings: Partial<User>) => Promise<void>;
+}) => {
   const [redeemCode, setRedeemCode] = useState('');
   const [isRedeeming, setIsRedeeming] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -1593,7 +1943,10 @@ const SettingsPage = ({ user, onUpdateSub, onLogout, onRefresh }: { user: User |
           <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
               <div className="flex items-center gap-4">
-                <div className="w-16 h-16 bg-netflix-red rounded-full flex items-center justify-center text-2xl font-bold">
+                <div 
+                  className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold shadow-xl border-2 border-white/10"
+                  style={{ backgroundColor: user?.profileColor || '#E50914' }}
+                >
                   {user?.email[0].toUpperCase()}
                 </div>
                 <div>
@@ -1646,6 +1999,85 @@ const SettingsPage = ({ user, onUpdateSub, onLogout, onRefresh }: { user: User |
         </section>
 
         <section>
+          <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4">Audio Preferences</h2>
+          <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6 space-y-8">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-4 bg-white/5 rounded-xl border border-white/5">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <Volume2 size={18} className="text-netflix-red" />
+                  <h3 className="font-bold">Master Default Volume</h3>
+                </div>
+                <p className="text-sm text-zinc-500">Set your preferred starting volume for all tracks (up to 250%)</p>
+              </div>
+              <div className="flex items-center gap-6 bg-black/40 p-4 rounded-xl border border-white/5 min-w-[300px]">
+                <div className="flex-1 flex flex-col gap-2">
+                  <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                    <span>0%</span>
+                    <span>100%</span>
+                    <span>250%</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="2.5" 
+                    step="0.01" 
+                    value={user?.defaultVolume || 0.5}
+                    onChange={(e) => onUpdateSettings({ defaultVolume: parseFloat(e.target.value) })}
+                    className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-netflix-red"
+                  />
+                </div>
+                <div className="flex flex-col items-center justify-center bg-zinc-900 w-16 h-12 rounded-lg border border-white/10">
+                  <span className="text-lg font-black text-white leading-none">
+                    {Math.round((user?.defaultVolume || 0.5) * 100)}
+                  </span>
+                  <span className="text-[8px] font-bold text-zinc-500 uppercase mt-1">%</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="font-bold">AI Sound Boost</h3>
+                <p className="text-sm text-zinc-500">Choose how AI Boost should behave</p>
+              </div>
+              <div className="flex bg-black p-1 rounded-lg border border-white/5">
+                {(['off', 'always', 'manual'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => onUpdateSettings({ aiBoostMode: mode })}
+                    className={cn(
+                      "px-4 py-1.5 rounded-md text-xs font-bold transition-all uppercase tracking-widest",
+                      user?.aiBoostMode === mode ? "bg-blue-600 text-white shadow-lg" : "text-zinc-500 hover:text-zinc-300"
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h3 className="font-bold">Clean Audio</h3>
+                <p className="text-sm text-zinc-500">Enable AI-powered noise reduction and clarity</p>
+              </div>
+              <button
+                onClick={() => onUpdateSettings({ cleanAudio: !user?.cleanAudio })}
+                className={cn(
+                  "w-12 h-6 rounded-full transition-all relative",
+                  user?.cleanAudio ? "bg-emerald-500" : "bg-zinc-800"
+                )}
+              >
+                <div className={cn(
+                  "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
+                  user?.cleanAudio ? "left-7" : "left-1"
+                )} />
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section>
           <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4">Redeem Subscription</h2>
           <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6">
             <p className="text-sm text-zinc-400 mb-6">Enter your redeem code to activate or extend your subscription.</p>
@@ -1667,6 +2099,12 @@ const SettingsPage = ({ user, onUpdateSub, onLogout, onRefresh }: { user: User |
             </div>
           </div>
         </section>
+
+        <div className="pt-10 border-t border-white/5 text-center">
+          <p className="text-[10px] text-zinc-600 uppercase tracking-[0.2em] font-bold">
+            it made by xrokz organisation
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -1813,6 +2251,17 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
 
     setIsUploading(true);
     try {
+      // 0. Convert Google Drive links to direct stream links
+      let finalSongUrl = songUrl;
+      if (songUrl.includes('drive.google.com') || songUrl.includes('docs.google.com')) {
+        const driveIdMatch = songUrl.match(/\/d\/([^/]+)/) || songUrl.match(/id=([^&]+)/);
+        if (driveIdMatch && driveIdMatch[1]) {
+          // Use docs.google.com for more reliable direct downloads
+          finalSongUrl = `https://docs.google.com/uc?export=download&id=${driveIdMatch[1]}`;
+          console.log("Converted Google Drive URL:", finalSongUrl);
+        }
+      }
+
       // 1. Upload Thumbnail (optional) or use URL
       let thumbnailUrl = thumbUrl || "https://picsum.photos/seed/music/400/400";
       if (songThumbnail && !thumbUrl) {
@@ -1827,7 +2276,7 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
         id: songId,
         title: songDetails.title,
         artist: songDetails.artist,
-        url: songUrl,
+        url: finalSongUrl,
         thumbnail: thumbnailUrl,
         duration: 0,
         updatedAt: serverTimestamp()
@@ -1942,14 +2391,34 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                 />
               </div>
               <div>
-                <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Song MP3 URL</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase block">Song URL (MP3 or Google Drive)</label>
+                  {songUrl && (
+                    <button 
+                      onClick={() => {
+                        let testUrl = songUrl;
+                        if (songUrl.includes('drive.google.com') || songUrl.includes('docs.google.com')) {
+                          const driveIdMatch = songUrl.match(/\/d\/([^/]+)/) || songUrl.match(/id=([^&]+)/);
+                          if (driveIdMatch && driveIdMatch[1]) {
+                            testUrl = `https://docs.google.com/uc?export=download&id=${driveIdMatch[1]}`;
+                          }
+                        }
+                        window.open(testUrl, '_blank');
+                      }}
+                      className="text-[10px] text-netflix-red hover:underline font-bold"
+                    >
+                      Test Link
+                    </button>
+                  )}
+                </div>
                 <input 
                   type="text" 
                   value={songUrl}
                   onChange={(e) => setSongUrl(e.target.value)}
-                  placeholder="https://example.com/song.mp3"
+                  placeholder="https://drive.google.com/file/d/..."
                   className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red"
                 />
+                <p className="text-[9px] text-zinc-500 mt-1 italic">Note: Google Drive files must be shared as "Anyone with the link".</p>
               </div>
               <div>
                 <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Thumbnail URL (Optional)</label>
@@ -2214,9 +2683,23 @@ export default function App() {
   const [loadingSongs, setLoadingSongs] = useState(true);
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [selectedSongForPlaylist, setSelectedSongForPlaylist] = useState<Song | null>(null);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const location = useLocation();
 
   // Sync with Firebase Auth state and User Document
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   useEffect(() => {
     let userDocUnsubscribe: (() => void) | null = null;
 
@@ -2398,6 +2881,23 @@ export default function App() {
       } catch (error) {
         console.error("Error updating subscription:", error);
         toast.error("Failed to update subscription");
+      }
+    }
+  };
+
+  const handleUpdateSettings = async (settings: Partial<User>) => {
+    if (user) {
+      try {
+        const userDocRef = doc(db, 'users', user.id);
+        await updateDoc(userDocRef, {
+          ...settings,
+          updatedAt: serverTimestamp()
+        });
+        setUser({ ...user, ...settings });
+        toast.success("Settings updated");
+      } catch (error) {
+        console.error("Error updating settings:", error);
+        toast.error("Failed to update settings");
       }
     }
   };
@@ -2666,20 +3166,28 @@ export default function App() {
   }
 
   return (
-    <div className="flex min-h-screen bg-netflix-dark overflow-hidden">
-      <Sidebar user={user} onLogout={handleLogout} />
-      
-      <main className="flex-1 overflow-y-auto h-screen">
-        <Routes>
-          <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
-          <Route path="/search" element={<SearchPage songs={songs} onPlay={handlePlay} user={user} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
-          <Route path="/library" element={<LibraryPage user={user} onPlay={handlePlay} onCreatePlaylist={handleCreatePlaylist} onUpdatePlaylist={handleUpdatePlaylist} onRefresh={handleRefreshSongs} onRefreshUser={handleRefreshUser} />} />
-          <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onRemoveDownload={handleRemoveDownload} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
-          <Route path="/settings" element={<SettingsPage user={user} onUpdateSub={handleUpdateSub} onLogout={handleLogout} onRefresh={handleRefreshUser} />} />
-          <Route path="/admin" element={<AdminPage user={user} songs={songs} onRefreshSongs={handleRefreshSongs} />} />
-          <Route path="*" element={<Navigate to="/" />} />
-        </Routes>
-      </main>
+    <div className="flex flex-col min-h-screen bg-netflix-dark overflow-hidden">
+      {isOffline && (
+        <div className="bg-netflix-red text-white py-2 px-4 text-center text-[10px] font-bold flex items-center justify-center gap-2 z-[100] sticky top-0 uppercase tracking-widest">
+          <WifiOff size={14} />
+          Offline Mode: Only downloaded songs are available
+        </div>
+      )}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar user={user} onLogout={handleLogout} />
+        
+        <main className="flex-1 overflow-y-auto h-full">
+          <MobileHeader user={user} />
+          <Routes>
+            <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
+            <Route path="/search" element={<SearchPage songs={songs} onPlay={handlePlay} user={user} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
+            <Route path="/library" element={<LibraryPage user={user} onPlay={handlePlay} onCreatePlaylist={handleCreatePlaylist} onUpdatePlaylist={handleUpdatePlaylist} onRefresh={handleRefreshSongs} onRefreshUser={handleRefreshUser} />} />
+            <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onRemoveDownload={handleRemoveDownload} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
+            <Route path="/settings" element={<SettingsPage user={user} onUpdateSub={handleUpdateSub} onLogout={handleLogout} onRefresh={handleRefreshUser} onUpdateSettings={handleUpdateSettings} />} />
+            <Route path="/admin" element={<AdminPage user={user} songs={songs} onRefreshSongs={handleRefreshSongs} />} />
+            <Route path="*" element={<Navigate to="/" />} />
+          </Routes>
+        </main>
 
       <Player 
         currentSong={currentSong} 
@@ -2691,6 +3199,7 @@ export default function App() {
           setCurrentSong(null);
           setIsPlaying(false);
         }}
+        onDownload={handleDownloadToApp}
         user={user}
       />
 
@@ -2723,6 +3232,7 @@ export default function App() {
           } 
         }} 
       />
+      </div>
     </div>
   );
 }

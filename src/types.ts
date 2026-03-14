@@ -8,6 +8,10 @@ export interface User {
   isAdmin?: boolean;
   playlists: Playlist[];
   downloads?: string[]; // Array of song IDs
+  defaultVolume?: number;
+  aiBoostMode?: 'off' | 'always' | 'manual';
+  cleanAudio?: boolean;
+  profileColor?: string;
 }
 
 export interface Song {
