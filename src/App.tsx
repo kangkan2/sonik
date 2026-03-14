@@ -56,7 +56,8 @@ import {
   where,
   getDocs,
   deleteDoc,
-  orderBy
+  orderBy,
+  onSnapshot
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { User, Song, Playlist, SubscriptionType } from './types';
@@ -424,8 +425,16 @@ const Player = ({
   );
 };
 
-const SubscriptionModal = ({ onSelect, onLogout }: { onSelect: (type: SubscriptionType, endsAt?: number) => void; onLogout: () => void }) => {
+const SubscriptionModal = ({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => Promise<void> }) => {
   const [selectedPlan, setSelectedPlan] = useState<'plus' | 'pro'>('pro');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await onRefresh();
+    setIsRefreshing(false);
+    toast.success('Status updated!');
+  };
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
@@ -493,7 +502,6 @@ const SubscriptionModal = ({ onSelect, onLogout }: { onSelect: (type: Subscripti
             </ul>
             <Link 
               to="/settings"
-              onClick={() => onSelect('none')}
               className={cn(
                 "w-full py-3 font-bold rounded-lg transition-colors text-center",
                 selectedPlan === 'plus' ? "bg-netflix-red text-white hover:bg-red-700" : "bg-white text-black hover:bg-zinc-200"
@@ -576,7 +584,6 @@ const SubscriptionModal = ({ onSelect, onLogout }: { onSelect: (type: Subscripti
             </ul>
             <Link 
               to="/settings"
-              onClick={() => onSelect('none')}
               className={cn(
                 "w-full py-3 font-bold rounded-lg transition-colors text-center",
                 selectedPlan === 'pro' ? "bg-netflix-red text-white hover:bg-red-700" : "bg-white text-black hover:bg-zinc-200"
@@ -594,6 +601,21 @@ const SubscriptionModal = ({ onSelect, onLogout }: { onSelect: (type: Subscripti
           <LogOut size={16} />
           Logout
         </button>
+
+        <div className="flex justify-center mt-4">
+          <button 
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="text-[10px] text-zinc-500 hover:text-white flex items-center gap-1 transition-colors"
+          >
+            <RefreshCw size={10} className={cn(isRefreshing && "animate-spin")} />
+            {isRefreshing ? 'Checking...' : 'Already redeemed? Refresh status'}
+          </button>
+        </div>
+
+        <p className="text-[10px] text-zinc-600 text-center mt-2">
+          If your subscription isn't showing up, try logging out and back in.
+        </p>
       </motion.div>
     </div>
   );
@@ -1603,10 +1625,10 @@ const SettingsPage = ({ user, onUpdateSub, onLogout, onRefresh }: { user: User |
                     <button 
                       onClick={handleRefresh}
                       disabled={isRefreshing}
-                      className="p-1 text-zinc-500 hover:text-white transition-colors"
-                      title="Refresh Status"
+                      className="flex items-center gap-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded-full transition-colors"
                     >
-                      <RefreshCw size={14} className={cn(isRefreshing && "animate-spin")} />
+                      <RefreshCw size={12} className={cn(isRefreshing && "animate-spin")} />
+                      {isRefreshing ? 'Refreshing...' : 'Refresh Status'}
                     </button>
                   </div>
                 </div>
@@ -2166,104 +2188,95 @@ export default function App() {
   const [selectedSongForPlaylist, setSelectedSongForPlaylist] = useState<Song | null>(null);
   const location = useLocation();
 
-  // Sync with Firebase Auth state
+  // Sync with Firebase Auth state and User Document
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let userDocUnsubscribe: (() => void) | null = null;
+
+    const authUnsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (userDocUnsubscribe) {
+        userDocUnsubscribe();
+        userDocUnsubscribe = null;
+      }
+
       if (firebaseUser) {
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
+        
+        // Initial check/setup
         try {
-          const userDocRef = doc(db, 'users', firebaseUser.uid);
           const userDoc = await getDoc(userDocRef);
-          
-          let userData: User;
           const isAdminEmail = firebaseUser.email === 'indiafff568@gmail.com' || firebaseUser.email === 'gtxnvme@gmail.com';
 
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            
-            // Ensure subscriptionEndsAt is a number (ms)
-            let subEndsAt = data.subscriptionEndsAt;
-            if (subEndsAt && typeof subEndsAt === 'object' && 'toMillis' in subEndsAt) {
-              subEndsAt = subEndsAt.toMillis();
-            } else if (typeof subEndsAt !== 'number') {
-              subEndsAt = undefined;
-            }
-
-            // SAFETY FIX: If subscription is absurdly long (e.g., > 10 years), reset it to 30 days.
-            const tenYears = 10 * 365 * 24 * 60 * 60 * 1000;
-            if (subEndsAt && subEndsAt > Date.now() + tenYears) {
-              console.warn("Absurdly long subscription detected, resetting to 30 days:", subEndsAt);
-              subEndsAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
-              updateDoc(userDocRef, { subscriptionEndsAt: subEndsAt });
-            }
-
-            // TRIAL FIX: If no active subscription, grant a 30-day trial automatically
-            if (!data.subscription || data.subscription === 'none' || !subEndsAt || subEndsAt < Date.now()) {
-              const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-              subEndsAt = Date.now() + thirtyDays;
-              updateDoc(userDocRef, { 
-                subscription: 'pro', 
-                subscriptionEndsAt: subEndsAt 
-              });
-              data.subscription = 'pro';
-            }
-
-            userData = {
-              id: firebaseUser.uid,
-              email: firebaseUser.email || '',
-              subscription: data.subscription || 'pro',
-              subscriptionEndsAt: subEndsAt,
-              isAdmin: data.isAdmin || isAdminEmail,
-              playlists: data.playlists || []
-            };
-
-            // Auto-grant admin privileges if not already set
-            if (isAdminEmail && !data.isAdmin) {
-              await updateDoc(userDocRef, {
-                isAdmin: true
-              });
-              userData.isAdmin = true;
-              toast.success("Admin privileges granted!");
-            }
-          } else {
-            // Fallback if doc doesn't exist yet - Grant 30-day trial by default
+          if (!userDoc.exists()) {
             const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-            userData = {
-              id: firebaseUser.uid,
+            const userData = {
               email: firebaseUser.email || '',
               subscription: 'pro',
               subscriptionEndsAt: Date.now() + thirtyDays,
               isAdmin: isAdminEmail,
-              playlists: []
-            };
-            
-            await setDoc(userDocRef, {
-              email: userData.email,
-              subscription: userData.subscription,
-              subscriptionEndsAt: userData.subscriptionEndsAt,
-              isAdmin: userData.isAdmin,
-              playlists: userData.playlists,
+              playlists: [],
               createdAt: serverTimestamp()
-            });
-            
+            };
+            await setDoc(userDocRef, userData);
             toast.success("Welcome! You've been granted a 30-day Pro trial.");
+          } else {
+            const data = userDoc.data();
+            // Auto-grant admin privileges if not already set
+            if (isAdminEmail && !data.isAdmin) {
+              await updateDoc(userDocRef, { isAdmin: true });
+            }
+            
+            // Ensure subscription is active (Trial Fix)
+            let subEndsAt = data.subscriptionEndsAt;
+            if (subEndsAt && typeof subEndsAt === 'object' && 'toMillis' in subEndsAt) {
+              subEndsAt = subEndsAt.toMillis();
+            }
+            
+            if (!data.subscription || data.subscription === 'none' || !subEndsAt || subEndsAt < Date.now()) {
+              const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+              await updateDoc(userDocRef, { 
+                subscription: 'pro', 
+                subscriptionEndsAt: Date.now() + thirtyDays 
+              });
+            }
           }
-          setUser(userData);
         } catch (error) {
-          console.error("Error fetching user data:", error);
-          setUser({
-            id: firebaseUser.uid,
-            email: firebaseUser.email || '',
-            subscription: 'none',
-            playlists: []
-          });
+          console.error("Error during initial user setup:", error);
         }
+
+        // Real-time listener for user data
+        userDocUnsubscribe = onSnapshot(userDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            let subEndsAt = data.subscriptionEndsAt;
+            if (subEndsAt && typeof subEndsAt === 'object' && 'toMillis' in subEndsAt) {
+              subEndsAt = subEndsAt.toMillis();
+            }
+
+            setUser({
+              id: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              subscription: data.subscription || 'none',
+              subscriptionEndsAt: subEndsAt,
+              isAdmin: data.isAdmin || false,
+              playlists: data.playlists || [],
+              downloads: data.downloads || []
+            });
+          }
+          setInitializing(false);
+        }, (error) => {
+          console.error("User document listener error:", error);
+          setInitializing(false);
+        });
       } else {
         setUser(null);
+        setInitializing(false);
       }
-      setInitializing(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      authUnsubscribe();
+      if (userDocUnsubscribe) userDocUnsubscribe();
+    };
   }, []);
 
   // Subscription check effect
@@ -2635,7 +2648,7 @@ export default function App() {
 
       <AnimatePresence>
         {showSubModal && (
-          <SubscriptionModal onSelect={handleUpdateSub} onLogout={handleLogout} />
+          <SubscriptionModal onLogout={handleLogout} onRefresh={handleRefreshUser} />
         )}
         {showPlaylistModal && selectedSongForPlaylist && (
           <PlaylistModal 
