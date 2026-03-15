@@ -68,6 +68,8 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { User, Song, Playlist, SubscriptionType } from './types';
 import { MOCK_SONGS } from './constants';
+import { scanLocalMusic } from './lib/offlineMusic';
+import { Capacitor } from '@capacitor/core';
 
 const CountdownTimer = ({ endsAt }: { endsAt: any }) => {
   const [timeLeft, setTimeLeft] = useState<string>('');
@@ -433,6 +435,10 @@ const Player = ({
           : "bottom-0 left-0 right-0 bg-zinc-900/90 backdrop-blur-xl border-t border-white/5 px-4 py-3 md:px-6 md:py-4 mb-[60px] md:mb-0"
       )}
     >
+      {/* 
+        Note: In this web-based Android app, the <audio> element serves as the MediaPlayer.
+        When running on Android via Capacitor, this uses the native media stack.
+      */}
       <audio 
         ref={audioRef} 
         onTimeUpdate={handleTimeUpdate} 
@@ -1897,30 +1903,47 @@ const SettingsPage = ({
       const codeDoc = querySnapshot.docs[0];
       const codeData = codeDoc.data();
       
-      const planType = codeData.type || 'plus';
-      const daysToAdd = codeData.days || 30;
+      const type = codeData.type || 'subscription';
       
-      const currentEndsAt = typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now() 
-        ? user.subscriptionEndsAt 
-        : Date.now();
-      
-      let newEndsAt = currentEndsAt + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
+      if (type === 'coin') {
+        const amount = Number(codeData.value) || 0;
+        const currentCoins = user.coins || 0;
+        await onUpdateSettings({ coins: currentCoins + amount });
+        
+        await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
+          used: true,
+          usedBy: user.id,
+          usedAt: serverTimestamp()
+        });
+        
+        setRedeemCode('');
+        toast.success(`Successfully redeemed ${amount} coins!`);
+      } else {
+        const planType = (codeData.value as SubscriptionType) || 'plus';
+        const daysToAdd = codeData.days || 30;
+        
+        const currentEndsAt = typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now() 
+          ? user.subscriptionEndsAt 
+          : Date.now();
+        
+        let newEndsAt = currentEndsAt + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
 
-      // Safety cap: Don't allow more than 10 years
-      const tenYearsFromNow = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
-      if (newEndsAt > tenYearsFromNow) {
-        newEndsAt = Date.now() + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
+        // Safety cap: Don't allow more than 10 years
+        const tenYearsFromNow = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
+        if (newEndsAt > tenYearsFromNow) {
+          newEndsAt = Date.now() + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
+        }
+
+        await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
+          used: true,
+          usedBy: user.id,
+          usedAt: serverTimestamp()
+        });
+
+        onUpdateSub(planType, newEndsAt);
+        setRedeemCode('');
+        toast.success(`Successfully redeemed ${daysToAdd} days of ${planType.toUpperCase()}!`);
       }
-
-      await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
-        used: true,
-        usedBy: user.id,
-        usedAt: serverTimestamp()
-      });
-
-      onUpdateSub(planType, newEndsAt);
-      setRedeemCode('');
-      toast.success(`Successfully redeemed ${daysToAdd} days of ${planType.toUpperCase()}!`);
     } catch (error: any) {
       toast.error(error.message || 'Failed to redeem code');
     } finally {
@@ -1951,7 +1974,14 @@ const SettingsPage = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-xl truncate max-w-[200px] md:max-w-none">{user?.email}</h3>
-                  <p className="text-sm text-zinc-500">Member since 2024</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm text-zinc-500">Member since 2024</p>
+                    <div className="w-1 h-1 rounded-full bg-zinc-700" />
+                    <div className="flex items-center gap-1 text-amber-500 font-bold text-sm">
+                      <Zap size={14} fill="currentColor" />
+                      {user?.coins || 0} Coins
+                    </div>
+                  </div>
                 </div>
               </div>
               <button 
@@ -2115,7 +2145,12 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
   const [usersList, setUsersList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingUsers, setLoadingUsers] = useState(true);
-  const [newCode, setNewCode] = useState({ code: '', days: 30, type: 'pro' as SubscriptionType });
+  const [newCode, setNewCode] = useState({ 
+    code: '', 
+    type: 'subscription' as 'subscription' | 'coin',
+    value: 'pro', // plan name or coin amount
+    days: 30 
+  });
 
   // Song Upload State
   const [songUrl, setSongUrl] = useState('');
@@ -2190,28 +2225,27 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
   const handleCreateCode = async () => {
     if (!newCode.code) return toast.error("Enter or generate a code");
     try {
-      console.log("Attempting to create code:", newCode.code, "as user:", user?.email);
-      const codeData = {
+      const codeData: any = {
         code: newCode.code,
-        days: newCode.days,
         type: newCode.type,
+        value: newCode.value,
         used: false,
         createdAt: serverTimestamp()
       };
+
+      if (newCode.type === 'subscription') {
+        codeData.days = newCode.days;
+      }
       
       await setDoc(doc(db, 'redeem_codes', newCode.code), codeData);
       
-      // Update local state with a temporary timestamp for immediate UI update
-      setCodes([{ ...codeData, id: newCode.code, createdAt: { seconds: Math.floor(Date.now() / 1000) } } as any, ...codes]);
-      setNewCode({ code: '', days: 30, type: 'pro' });
+      // Update local state
+      setCodes([{ ...codeData, id: newCode.code, createdAt: { seconds: Math.floor(Date.now() / 1000) } }, ...codes]);
+      setNewCode({ ...newCode, code: '' });
       toast.success("Code created!");
     } catch (error: any) {
       console.error("Error creating code:", error);
-      if (error.code === 'permission-denied') {
-        toast.error("Permission Denied: Check Firestore Rules in Firebase Console.");
-      } else {
-        toast.error(error.message || "Failed to create code");
-      }
+      toast.error(error.message || "Failed to create code");
     }
   };
 
@@ -2318,6 +2352,30 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
             <h2 className="text-sm font-bold uppercase tracking-widest mb-6">Create New Code</h2>
             <div className="space-y-4">
               <div>
+                <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Code Type</label>
+                <div className="flex bg-black p-1 rounded-lg border border-white/10">
+                  <button 
+                    onClick={() => setNewCode({ ...newCode, type: 'subscription', value: 'pro' })}
+                    className={cn(
+                      "flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-all",
+                      newCode.type === 'subscription' ? "bg-netflix-red text-white" : "text-zinc-500"
+                    )}
+                  >
+                    Subscription
+                  </button>
+                  <button 
+                    onClick={() => setNewCode({ ...newCode, type: 'coin', value: 100 })}
+                    className={cn(
+                      "flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-all",
+                      newCode.type === 'coin' ? "bg-amber-500 text-white" : "text-zinc-500"
+                    )}
+                  >
+                    Coins
+                  </button>
+                </div>
+              </div>
+
+              <div>
                 <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Code</label>
                 <div className="flex gap-2">
                   <input 
@@ -2330,39 +2388,55 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                   <button 
                     onClick={generateRandomCode}
                     className="p-2 bg-zinc-800 rounded-lg text-zinc-400 hover:text-white transition-colors"
-                    title="Generate Random Code"
                   >
                     <RefreshCw size={18} />
                   </button>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+
+              {newCode.type === 'subscription' ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Plan</label>
+                    <select 
+                      value={newCode.value}
+                      onChange={(e) => setNewCode({ ...newCode, value: e.target.value })}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
+                    >
+                      <option value="plus">Plus</option>
+                      <option value="pro">Pro</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Days</label>
+                    <input 
+                      type="number" 
+                      value={newCode.days}
+                      onChange={(e) => setNewCode({ ...newCode, days: parseInt(e.target.value) })}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
+                    />
+                  </div>
+                </div>
+              ) : (
                 <div>
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Days</label>
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Coin Amount</label>
                   <input 
                     type="number" 
-                    value={newCode.days}
-                    onChange={(e) => setNewCode({ ...newCode, days: parseInt(e.target.value) })}
-                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
+                    value={newCode.value}
+                    onChange={(e) => setNewCode({ ...newCode, value: parseInt(e.target.value) })}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-amber-500 text-sm"
                   />
                 </div>
-                <div>
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Type</label>
-                  <select 
-                    value={newCode.type}
-                    onChange={(e) => setNewCode({ ...newCode, type: e.target.value as SubscriptionType })}
-                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
-                  >
-                    <option value="plus">Plus</option>
-                    <option value="pro">Pro</option>
-                  </select>
-                </div>
-              </div>
+              )}
+
               <button 
                 onClick={handleCreateCode}
-                className="w-full py-3 bg-netflix-red text-white font-bold rounded-lg hover:bg-red-700 transition-colors mt-4"
+                className={cn(
+                  "w-full py-3 text-white font-bold rounded-lg transition-colors mt-4",
+                  newCode.type === 'subscription' ? "bg-netflix-red hover:bg-red-700" : "bg-amber-500 hover:bg-amber-600"
+                )}
               >
-                Create Code
+                Create {newCode.type === 'subscription' ? 'Subscription' : 'Coin'} Code
               </button>
             </div>
           </section>
@@ -2481,7 +2555,22 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
 
         <div className="lg:col-span-2 space-y-8">
           <section className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6">
-            <h2 className="text-sm font-bold uppercase tracking-widest mb-6">Existing Codes</h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-sm font-bold uppercase tracking-widest">Manage Redeem Codes</h2>
+              <button 
+                onClick={() => {
+                  setLoading(true);
+                  getDocs(query(collection(db, 'redeem_codes'), orderBy('createdAt', 'desc')))
+                    .then(snap => {
+                      setCodes(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                      setLoading(false);
+                    });
+                }}
+                className="text-zinc-500 hover:text-white transition-colors"
+              >
+                <RefreshCw size={16} />
+              </button>
+            </div>
             {loading ? (
               <div className="text-center py-10 text-zinc-500">Loading codes...</div>
             ) : (
@@ -2491,7 +2580,7 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                     <tr className="text-[10px] text-zinc-500 uppercase border-b border-white/5">
                       <th className="pb-3 font-bold">Code</th>
                       <th className="pb-3 font-bold">Type</th>
-                      <th className="pb-3 font-bold">Days</th>
+                      <th className="pb-3 font-bold">Value</th>
                       <th className="pb-3 font-bold">Status</th>
                       <th className="pb-3 font-bold text-right">Action</th>
                     </tr>
@@ -2500,14 +2589,32 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                     {codes.map((code) => (
                       <tr key={code.id} className="border-b border-white/5 last:border-0">
                         <td className="py-4 font-mono font-bold">{code.code}</td>
-                        <td className="py-4 uppercase text-xs">{code.type}</td>
-                        <td className="py-4">{code.days}</td>
+                        <td className="py-4">
+                          <span className={cn(
+                            "px-2 py-0.5 rounded text-[8px] font-bold uppercase",
+                            code.type === 'coin' ? "bg-amber-500/20 text-amber-500" : "bg-blue-500/20 text-blue-500"
+                          )}>
+                            {code.type || 'subscription'}
+                          </span>
+                        </td>
+                        <td className="py-4">
+                          {code.type === 'coin' ? (
+                            <span className="flex items-center gap-1 text-amber-500 font-bold">
+                              <Zap size={12} fill="currentColor" />
+                              {code.value}
+                            </span>
+                          ) : (
+                            <span className="font-bold">
+                              {String(code.value).toUpperCase()} ({code.days}d)
+                            </span>
+                          )}
+                        </td>
                         <td className="py-4">
                           <span className={cn(
                             "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase",
                             code.used ? "bg-zinc-800 text-zinc-500" : "bg-emerald-500/20 text-emerald-500"
                           )}>
-                            {code.used ? 'Used' : 'Available'}
+                            {code.used ? 'Used' : 'Active'}
                           </span>
                         </td>
                         <td className="py-4 text-right">
@@ -2688,17 +2795,29 @@ export default function App() {
 
   // Sync with Firebase Auth state and User Document
   useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
+    const handleOnline = () => {
+      setIsOffline(false);
+      handleRefreshSongs();
+    };
     const handleOffline = () => setIsOffline(true);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // Fallback for initializing state to prevent freeze
+    const timeout = setTimeout(() => {
+      if (initializing) {
+        console.warn("Initialization timed out, proceeding to app...");
+        setInitializing(false);
+      }
+    }, 5000);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      clearTimeout(timeout);
     };
-  }, []);
+  }, [initializing]);
 
   useEffect(() => {
     let userDocUnsubscribe: (() => void) | null = null;
@@ -2810,12 +2929,25 @@ export default function App() {
 
   // Fetch songs
   useEffect(() => {
-    const fetchSongs = async () => {
+    const fetchAllSongs = async () => {
+      setLoadingSongs(true);
       try {
-        const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
-        const querySnapshot = await getDocs(q);
-        const fetchedSongs = querySnapshot.docs.map(doc => doc.data() as Song);
-        setSongs([...MOCK_SONGS, ...fetchedSongs]);
+        let remoteSongs: Song[] = [];
+        if (navigator.onLine) {
+          try {
+            const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
+            const querySnapshot = await getDocs(q);
+            remoteSongs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Song));
+          } catch (e) {
+            console.warn("Failed to fetch remote songs, using cache/mock", e);
+          }
+        }
+
+        // Scan local music (Android /MusicApp/songs)
+        const localSongs = await scanLocalMusic();
+        const localSongsWithFlag = localSongs.map(s => ({ ...s, isOffline: true }));
+
+        setSongs([...MOCK_SONGS, ...remoteSongs, ...localSongsWithFlag]);
       } catch (error) {
         console.error("Error fetching songs:", error);
         setSongs(MOCK_SONGS);
@@ -2823,8 +2955,8 @@ export default function App() {
         setLoadingSongs(false);
       }
     };
-    fetchSongs();
-  }, []);
+    fetchAllSongs();
+  }, [isOffline]);
 
   const handleLogin = (userData: User) => {
     setUser(userData);
@@ -3137,10 +3269,17 @@ export default function App() {
   const handleRefreshSongs = async () => {
     setLoadingSongs(true);
     try {
-      const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const fetchedSongs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Song));
-      setSongs([...MOCK_SONGS, ...fetchedSongs]);
+      let remoteSongs: Song[] = [];
+      if (navigator.onLine) {
+        const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
+        const querySnapshot = await getDocs(q);
+        remoteSongs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Song));
+      }
+      
+      const localSongs = await scanLocalMusic();
+      const localSongsWithFlag = localSongs.map(s => ({ ...s, isOffline: true }));
+      
+      setSongs([...MOCK_SONGS, ...remoteSongs, ...localSongsWithFlag]);
     } catch (error) {
       console.error("Error fetching songs:", error);
     } finally {
@@ -3150,8 +3289,26 @@ export default function App() {
 
   if (initializing) {
     return (
-      <div className="min-h-screen bg-netflix-dark flex items-center justify-center">
-        <div className="w-12 h-12 border-4 border-netflix-red border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-netflix-dark flex flex-col items-center justify-center gap-6">
+        <motion.div 
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+          className="w-16 h-16 border-4 border-netflix-red border-t-transparent rounded-full"
+        />
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">SONIK</h2>
+          <p className="text-zinc-500 text-sm animate-pulse">
+            {navigator.onLine ? 'Initializing secure session...' : 'Offline Mode: Loading local library...'}
+          </p>
+        </div>
+        {!navigator.onLine && (
+          <button 
+            onClick={() => setInitializing(false)}
+            className="mt-4 px-6 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-bold transition-all"
+          >
+            Continue Offline
+          </button>
+        )}
       </div>
     );
   }
@@ -3166,7 +3323,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col min-h-screen bg-netflix-dark overflow-hidden">
+    <div className="flex flex-col h-screen bg-netflix-dark overflow-hidden">
       {isOffline && (
         <div className="bg-netflix-red text-white py-2 px-4 text-center text-[10px] font-bold flex items-center justify-center gap-2 z-[100] sticky top-0 uppercase tracking-widest">
           <WifiOff size={14} />
@@ -3176,7 +3333,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar user={user} onLogout={handleLogout} />
         
-        <main className="flex-1 overflow-y-auto h-full">
+        <main className="flex-1 overflow-y-auto">
           <MobileHeader user={user} />
           <Routes>
             <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />

@@ -1,4 +1,5 @@
 export type SubscriptionType = 'none' | 'plus' | 'pro';
+export type RedeemCodeType = 'subscription' | 'coin';
 
 export interface User {
   id: string;
@@ -12,6 +13,7 @@ export interface User {
   aiBoostMode?: 'off' | 'always' | 'manual';
   cleanAudio?: boolean;
   profileColor?: string;
+  coins?: number;
 }
 
 export interface Song {
@@ -22,10 +24,23 @@ export interface Song {
   url: string;
   duration: number;
   label?: string;
+  isOffline?: boolean;
 }
 
 export interface Playlist {
   id: string;
   name: string;
   songs: Song[];
+}
+
+export interface RedeemCode {
+  id: string;
+  code: string;
+  type: RedeemCodeType;
+  value: string | number; // plan name or coin amount
+  days?: number; // for subscription
+  used: boolean;
+  usedBy?: string;
+  usedAt?: any;
+  createdAt: any;
 }
