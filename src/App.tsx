@@ -70,6 +70,7 @@ import { User, Song, Playlist, SubscriptionType } from './types';
 import { MOCK_SONGS } from './constants';
 import { scanLocalMusic } from './lib/offlineMusic';
 import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
 
 const CountdownTimer = ({ endsAt }: { endsAt: any }) => {
   const [timeLeft, setTimeLeft] = useState<string>('');
@@ -106,6 +107,60 @@ const CountdownTimer = ({ endsAt }: { endsAt: any }) => {
   }, [endsAt]);
 
   return <span className="font-mono text-emerald-500">{timeLeft}</span>;
+};
+
+const SplashScreen = ({ onComplete }: { onComplete: () => void }) => {
+  return (
+    <motion.div 
+      initial={{ opacity: 1 }}
+      animate={{ opacity: 0 }}
+      transition={{ duration: 1, delay: 2.5 }}
+      onAnimationComplete={onComplete}
+      className="fixed inset-0 z-[1000] bg-black flex items-center justify-center overflow-hidden"
+    >
+      <div className="relative flex flex-col items-center">
+        <motion.div
+          initial={{ scale: 0.5, opacity: 0 }}
+          animate={{ scale: [0.5, 1.2, 1], opacity: 1 }}
+          transition={{ duration: 1.5, ease: "easeOut" }}
+          className="relative"
+        >
+          <h1 className="text-7xl md:text-9xl font-black tracking-tighter text-netflix-red relative">
+            SONIK
+            <span className="absolute -top-2 -right-6 text-xs md:text-sm font-bold">TM</span>
+          </h1>
+          
+          {/* Netflix-like "N" beam effect simulation */}
+          <motion.div 
+            initial={{ height: 0 }}
+            animate={{ height: '100%' }}
+            transition={{ duration: 0.8, delay: 0.5 }}
+            className="absolute left-0 top-0 w-2 bg-gradient-to-b from-transparent via-red-600 to-transparent opacity-50"
+          />
+        </motion.div>
+        
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 1.2, duration: 0.8 }}
+          className="mt-8 flex items-center gap-2 text-zinc-500 font-medium tracking-widest text-xs uppercase"
+        >
+          <Sparkles size={14} className="text-netflix-red" />
+          Powered by AI
+        </motion.div>
+      </div>
+      
+      {/* Background light pulse */}
+      <motion.div 
+        animate={{ 
+          scale: [1, 1.5, 1],
+          opacity: [0.1, 0.2, 0.1]
+        }}
+        transition={{ duration: 2, repeat: Infinity }}
+        className="absolute inset-0 bg-netflix-red/5 rounded-full blur-[120px]"
+      />
+    </motion.div>
+  );
 };
 
 // --- Components ---
@@ -180,7 +235,10 @@ const MobileHeader = ({ user }: { user: User | null }) => {
         <div className="w-8 h-8 bg-netflix-red rounded-full flex items-center justify-center">
           <span className="font-bold text-xl">S</span>
         </div>
-        <h1 className="text-xl font-bold tracking-tighter text-netflix-red">SONIK</h1>
+        <h1 className="text-xl font-bold tracking-tighter text-netflix-red flex items-start">
+          SONIK
+          <span className="text-[6px] font-bold ml-0.5 mt-0.5">TM</span>
+        </h1>
       </div>
       <Link to="/settings">
         <div 
@@ -334,7 +392,7 @@ const Player = ({
           // Reset progress
           setProgress(0);
           
-          // Check if song is in offline cache
+          // 1. Check if song is in offline cache (Web/PWA)
           const cache = await caches.open('sonik-offline-songs');
           const cachedResponse = await cache.match(currentSong.url);
           
@@ -343,7 +401,26 @@ const Player = ({
             const blobUrl = URL.createObjectURL(blob);
             audioRef.current.src = blobUrl;
             console.log("Playing from offline cache:", currentSong.title);
-          } else {
+          } 
+          // 2. Check native filesystem (Android/Capacitor)
+          else if (Capacitor.isNativePlatform()) {
+            try {
+              const fileName = `MusicApp/songs/${currentSong.id}.mp3`;
+              const file = await Filesystem.readFile({
+                path: fileName,
+                directory: Directory.ExternalStorage
+              });
+              // Convert base64 to blob URL for better performance/compatibility
+              const blobUrl = `data:audio/mpeg;base64,${file.data}`;
+              audioRef.current.src = blobUrl;
+              console.log("Playing from native filesystem:", currentSong.title);
+            } catch (fsErr) {
+              console.log("Not found in native filesystem, playing from URL");
+              audioRef.current.src = currentSong.url;
+            }
+          }
+          // 3. Fallback to remote URL
+          else {
             audioRef.current.src = currentSong.url;
           }
 
@@ -2781,7 +2858,12 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [showSplash, setShowSplash] = useState(true);
+  const [user, setUser] = useState<User | null>(() => {
+    // Initial offline auth check
+    const savedUser = localStorage.getItem('sonik_user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
@@ -2793,6 +2875,44 @@ export default function App() {
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const location = useLocation();
 
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      localStorage.removeItem('sonik_user');
+      setCurrentSong(null);
+      setIsPlaying(false);
+      toast.success('Logged out successfully');
+    } catch (error) {
+      toast.error('Logout failed');
+    }
+  };
+
+  const handleRefreshSongs = async () => {
+    setLoadingSongs(true);
+    try {
+      let remoteSongs: Song[] = [];
+      if (navigator.onLine) {
+        try {
+          const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
+          const querySnapshot = await getDocs(q);
+          remoteSongs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Song));
+        } catch (e) {
+          console.warn("Failed to fetch remote songs", e);
+        }
+      }
+      
+      const localSongs = await scanLocalMusic();
+      const localSongsWithFlag = localSongs.map(s => ({ ...s, isOffline: true }));
+      
+      setSongs([...MOCK_SONGS, ...remoteSongs, ...localSongsWithFlag]);
+    } catch (error) {
+      console.error("Error fetching songs:", error);
+    } finally {
+      setLoadingSongs(false);
+    }
+  };
+
   // Sync with Firebase Auth state and User Document
   useEffect(() => {
     const handleOnline = () => {
@@ -2803,6 +2923,64 @@ export default function App() {
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+
+    // Check for subscription expiry and cleanup
+    const checkSubscriptionAndCleanup = async () => {
+      const savedUser = localStorage.getItem('sonik_user');
+      if (!savedUser) return;
+
+      const parsedUser = JSON.parse(savedUser) as User;
+      const now = Date.now();
+      
+      // If subscription expired
+      if (parsedUser.subscriptionEndsAt && parsedUser.subscriptionEndsAt < now) {
+        console.log("Subscription expired, logging out...");
+        
+        // Record expiry date if not already recorded
+        if (!localStorage.getItem('sonik_expiry_date')) {
+          localStorage.setItem('sonik_expiry_date', parsedUser.subscriptionEndsAt.toString());
+        }
+
+        // Auto logout
+        handleLogout();
+      } else {
+        // Clear expiry date if subscription is active
+        localStorage.removeItem('sonik_expiry_date');
+      }
+
+      // Check for 3-day cleanup
+      const expiryDateStr = localStorage.getItem('sonik_expiry_date');
+      if (expiryDateStr) {
+        const expiryDate = parseInt(expiryDateStr);
+        const threeDaysInMs = 3 * 24 * 60 * 60 * 1000;
+        
+        if (now - expiryDate > threeDaysInMs) {
+          console.log("Subscription expired for > 3 days, cleaning up local files...");
+          try {
+            if (Capacitor.isNativePlatform()) {
+              const path = 'MusicApp/songs';
+              const result = await Filesystem.readdir({
+                path,
+                directory: Directory.ExternalStorage
+              });
+              
+              for (const file of result.files) {
+                await Filesystem.deleteFile({
+                  path: `${path}/${file.name}`,
+                  directory: Directory.ExternalStorage
+                });
+              }
+              console.log("Cleanup complete.");
+              localStorage.removeItem('sonik_expiry_date');
+            }
+          } catch (err) {
+            console.error("Cleanup failed:", err);
+          }
+        }
+      }
+    };
+
+    checkSubscriptionAndCleanup();
 
     // Fallback for initializing state to prevent freeze
     const timeout = setTimeout(() => {
@@ -2882,7 +3060,7 @@ export default function App() {
               subEndsAt = subEndsAt.toMillis();
             }
 
-            setUser({
+            const userData: User = {
               id: firebaseUser.uid,
               email: firebaseUser.email || '',
               subscription: data.subscription || 'none',
@@ -2890,7 +3068,10 @@ export default function App() {
               isAdmin: data.isAdmin || false,
               playlists: data.playlists || [],
               downloads: data.downloads || []
-            });
+            };
+
+            setUser(userData);
+            localStorage.setItem('sonik_user', JSON.stringify(userData));
           }
           setInitializing(false);
         }, (error) => {
@@ -2898,7 +3079,16 @@ export default function App() {
           setInitializing(false);
         });
       } else {
-        setUser(null);
+        // If offline and no firebase user, we already initialized from localStorage
+        if (!navigator.onLine) {
+          const savedUser = localStorage.getItem('sonik_user');
+          if (savedUser) {
+            setUser(JSON.parse(savedUser));
+          }
+        } else {
+          setUser(null);
+          localStorage.removeItem('sonik_user');
+        }
         setInitializing(false);
       }
     });
@@ -2976,18 +3166,6 @@ export default function App() {
     return user.subscription !== 'none' && endsAt > Date.now();
   };
 
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      setUser(null);
-      setCurrentSong(null);
-      setIsPlaying(false);
-      toast.success('Logged out successfully');
-    } catch (error) {
-      toast.error('Logout failed');
-    }
-  };
-
   const handleUpdateSub = async (type: SubscriptionType, endsAt?: number) => {
     if (user) {
       try {
@@ -3050,16 +3228,47 @@ export default function App() {
 
       let fetchSuccess = false;
       try {
-        // 1. Cache for offline playback using Cache API
+        // 1. Cache for offline playback using Cache API (Web/PWA)
         const cache = await caches.open('sonik-offline-songs');
         const response = await fetch(song.url);
         
         if (response.ok) {
-          // Store the actual audio file in the browser's cache
-          await cache.put(song.url, response.clone());
-
-          // 2. Trigger browser download (for local device storage)
           const blob = await response.blob();
+          
+          // Store in Cache API
+          await cache.put(song.url, new Response(blob));
+
+          // 2. Store in Capacitor Filesystem if native (Android)
+          if (Capacitor.isNativePlatform()) {
+            try {
+              // Request permissions first
+              const permission = await Filesystem.checkPermissions();
+              if (permission.publicStorage !== 'granted') {
+                await Filesystem.requestPermissions();
+              }
+
+              const reader = new FileReader();
+              reader.readAsDataURL(blob);
+              reader.onloadend = async () => {
+                const base64data = reader.result as string;
+                // Remove the data:audio/mpeg;base64, prefix if present
+                const base64Content = base64data.split(',')[1] || base64data;
+                const fileName = `MusicApp/songs/${song.id}.mp3`;
+                
+                await Filesystem.writeFile({
+                  path: fileName,
+                  data: base64Content,
+                  directory: Directory.ExternalStorage,
+                  recursive: true
+                });
+                console.log("Saved to native filesystem:", fileName);
+              };
+            } catch (fsErr) {
+              console.error("Failed to save to native filesystem:", fsErr);
+            }
+          }
+
+          // 3. Trigger browser download (for local device storage)
           const url = window.URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
@@ -3111,8 +3320,23 @@ export default function App() {
     try {
       const song = songs.find(s => s.id === songId);
       if (song) {
+        // 1. Remove from Cache API
         const cache = await caches.open('sonik-offline-songs');
         await cache.delete(song.url);
+
+        // 2. Remove from Capacitor Filesystem if native
+        if (Capacitor.isNativePlatform()) {
+          try {
+            const fileName = `MusicApp/songs/${song.id}.mp3`;
+            await Filesystem.deleteFile({
+              path: fileName,
+              directory: Directory.ExternalStorage
+            });
+            console.log("Removed from native filesystem:", fileName);
+          } catch (fsErr) {
+            console.warn("Could not find file in native filesystem to delete", fsErr);
+          }
+        }
       }
 
       const userDocRef = doc(db, 'users', user.id);
@@ -3266,26 +3490,13 @@ export default function App() {
     }
   };
 
-  const handleRefreshSongs = async () => {
-    setLoadingSongs(true);
-    try {
-      let remoteSongs: Song[] = [];
-      if (navigator.onLine) {
-        const q = query(collection(db, 'songs'), orderBy('createdAt', 'desc'));
-        const querySnapshot = await getDocs(q);
-        remoteSongs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Song));
-      }
-      
-      const localSongs = await scanLocalMusic();
-      const localSongsWithFlag = localSongs.map(s => ({ ...s, isOffline: true }));
-      
-      setSongs([...MOCK_SONGS, ...remoteSongs, ...localSongsWithFlag]);
-    } catch (error) {
-      console.error("Error fetching songs:", error);
-    } finally {
-      setLoadingSongs(false);
-    }
-  };
+  if (showSplash) {
+    return (
+      <AnimatePresence mode="wait">
+        <SplashScreen onComplete={() => setShowSplash(false)} />
+      </AnimatePresence>
+    );
+  }
 
   if (initializing) {
     return (
