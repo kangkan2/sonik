@@ -31,6 +31,7 @@ import {
   Edit2,
   Users,
   MoreVertical,
+  ArrowUpCircle,
   WifiOff,
   Minimize2,
   Maximize2,
@@ -175,7 +176,6 @@ const Sidebar = ({ user, onLogout }: { user: User | null; onLogout: () => void }
     { icon: Home, label: 'Home', path: '/' },
     { icon: Search, label: 'Search', path: '/search' },
     { icon: Library, label: 'Your Library', path: '/library' },
-    { icon: Download, label: 'Downloads', path: '/downloads' },
   ];
 
   return (
@@ -261,7 +261,6 @@ const MobileNav = () => {
     { icon: Home, label: 'Home', path: '/' },
     { icon: Search, label: 'Search', path: '/search' },
     { icon: Library, label: 'Library', path: '/library' },
-    { icon: Download, label: 'Downloads', path: '/downloads' },
     { icon: Settings, label: 'Settings', path: '/settings' },
   ];
 
@@ -292,6 +291,8 @@ const Player = ({
   onPrev,
   onClose,
   onDownload,
+  onDelete,
+  onAddToPlaylist,
   user
 }: { 
   currentSong: Song | null; 
@@ -301,6 +302,8 @@ const Player = ({
   onPrev: () => void;
   onClose: () => void;
   onDownload: (song: Song) => void;
+  onDelete: (id: string) => void;
+  onAddToPlaylist: (song: Song) => void;
   user: User | null;
 }) => {
   const [volume, setVolume] = useState(user?.defaultVolume || 0.5);
@@ -308,6 +311,7 @@ const Player = ({
   const [isMuted, setIsMuted] = useState(false);
   const [progress, setProgress] = useState(0);
   const [isMini, setIsMini] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
@@ -613,7 +617,7 @@ const Player = ({
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {/* Mobile Seekable Progress Bar */}
+          {/* Mobile Music Timeline (Main Timeline at Top - Always Visible) */}
           <div className="md:hidden absolute top-0 left-0 right-0 h-[4px] bg-zinc-800">
             <input 
               type="range" 
@@ -627,6 +631,30 @@ const Player = ({
               className="h-full bg-netflix-red transition-all duration-100" 
               style={{ width: `${progress}%` }}
             />
+          </div>
+
+          {/* Mobile Top Row: Playtime & Close Button */}
+          <div className="flex md:hidden items-center justify-between px-2 mb-1.5">
+            <div className="flex items-center gap-2 bg-white/5 px-2 py-1 rounded-full">
+              <div className="flex items-center gap-1 text-[10px] font-mono text-zinc-400">
+                <span className="text-white/80">
+                  {Math.floor((audioRef.current?.currentTime || 0) / 60)}:
+                  {String(Math.floor((audioRef.current?.currentTime || 0) % 60)).padStart(2, '0')}
+                </span>
+                <span className="opacity-30">/</span>
+                <span>
+                  {Math.floor((audioRef.current?.duration && !isNaN(audioRef.current.duration) ? audioRef.current.duration : 0) / 60)}:
+                  {String(Math.floor((audioRef.current?.duration && !isNaN(audioRef.current.duration) ? audioRef.current.duration : 0) % 60)).padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+            <button 
+              onClick={onClose}
+              className="w-7 h-7 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white rounded-full transition-all active:scale-90"
+              title="Close Player"
+            >
+              <X size={14} />
+            </button>
           </div>
           
           <div className="flex items-center justify-between">
@@ -649,21 +677,14 @@ const Player = ({
                   <p className="text-[10px] md:text-xs text-zinc-400 truncate">{currentSong.artist}</p>
                 </div>
                 
-                {/* Mobile Only Main Controls - AI Boost replaced with Volume Up/Down */}
+                {/* Mobile Only Main Controls - Play/Next/Save Buttons */}
                 <div className="flex md:hidden items-center gap-1">
                   <button 
-                    onClick={() => setVolume(Math.max(0, volume - 0.1))}
+                    onClick={() => onAddToPlaylist(currentSong)}
                     className="p-2 text-zinc-400 hover:text-white"
-                    title="Volume Down"
+                    title="Save to Playlist"
                   >
-                    <Volume1 size={18} />
-                  </button>
-                  <button 
-                    onClick={() => setVolume(Math.min(2.5, volume + 0.1))}
-                    className="p-2 text-zinc-400 hover:text-white"
-                    title="Volume Up"
-                  >
-                    <Volume2 size={18} />
+                    <Plus size={20} />
                   </button>
                   <button 
                     onClick={onTogglePlay}
@@ -677,14 +698,14 @@ const Player = ({
                 </div>
               </div>
 
-              {/* Mobile Volume Slider (Keeping it for precise control, but user asked for buttons above) */}
-              <div className="flex md:hidden items-center gap-2 mt-3 px-1">
-                <div className="flex-1 relative flex items-center h-4">
+              {/* Mobile Volume Scrubber (Replacing buttons below timeline) */}
+              <div className="md:hidden flex flex-col gap-1 mt-3 px-1">
+                <div className="relative flex items-center h-4">
                   <input 
                     type="range" 
                     min="0" 
                     max="2.5" 
-                    step="0.01" 
+                    step="0.01"
                     value={volume} 
                     onChange={(e) => setVolume(Number(e.target.value))}
                     className="w-full h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-white"
@@ -786,27 +807,54 @@ const Player = ({
                 <Minimize2 size={18} />
               </button>
 
-              {isPro && (
+              <div className="relative">
                 <button 
-                  onClick={() => onDownload(currentSong)}
-                  className={cn(
-                    "transition-colors",
-                    user?.downloads?.includes(currentSong.id) ? "text-emerald-500" : "text-zinc-400 hover:text-white"
-                  )}
-                  title={user?.downloads?.includes(currentSong.id) ? "Downloaded" : "Download for offline"}
-                >
-                  <Download size={18} />
-                </button>
-              )}
-              
-              {isPro && (
-                <button 
-                  onClick={() => toast.success('Link copied to clipboard!')}
+                  onClick={() => setShowMenu(!showMenu)}
                   className="text-zinc-400 hover:text-white transition-colors"
+                  title="More Options"
                 >
-                  <Share2 size={18} />
+                  <MoreVertical size={18} />
                 </button>
-              )}
+
+                <AnimatePresence>
+                  {showMenu && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute bottom-full right-0 mb-2 w-48 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50"
+                    >
+                      {user?.isAdmin && (
+                        <button 
+                          onClick={() => {
+                            const code = prompt("Enter security code to delete song (e.g. 1234):");
+                            if (code === "1234") {
+                              onDelete(currentSong.id);
+                              setShowMenu(false);
+                            } else if (code !== null) {
+                              toast.error("Invalid security code");
+                            }
+                          }}
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-netflix-red hover:bg-white/5 transition-colors"
+                        >
+                          <Trash2 size={16} />
+                          Delete Song
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => {
+                          toast.success('Link copied to clipboard!');
+                          setShowMenu(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white hover:bg-white/5 transition-colors"
+                      >
+                        <Share2 size={16} />
+                        Share Song
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
 
               <button 
                 onClick={onClose}
@@ -1253,12 +1301,12 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
   );
 };
 
-const SearchPage = ({ songs, onPlay, user, onDownload, onAddToPlaylist }: { 
+const SearchPage = ({ songs, onPlay, user, onAddToPlaylist, onDeleteSong }: { 
   songs: Song[]; 
   onPlay: (song: Song) => void; 
   user: User | null;
-  onDownload: (song: Song) => void;
   onAddToPlaylist: (song: Song) => void;
+  onDeleteSong: (id: string) => void;
 }) => {
   const [query, setQuery] = useState('');
   const isPro = user?.subscription === 'pro';
@@ -1305,22 +1353,30 @@ const SearchPage = ({ songs, onPlay, user, onDownload, onAddToPlaylist }: {
                 <h3 className="font-bold text-sm truncate">{song.title}</h3>
                 <p className="text-xs text-zinc-500 truncate">{song.artist}</p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
                 <button 
                   onClick={() => onAddToPlaylist(song)}
                   className="p-2 text-zinc-400 hover:text-white transition-colors"
+                  title="Add to Playlist"
                 >
                   <Plus size={18} />
                 </button>
-                <button 
-                  onClick={() => onDownload(song)}
-                  className={cn(
-                    "p-2 rounded-full transition-colors",
-                    isPro ? "text-emerald-500 hover:bg-emerald-500/10" : "text-zinc-600"
-                  )}
-                >
-                  <Download size={18} />
-                </button>
+                {user?.isAdmin && (
+                  <button 
+                    onClick={() => {
+                      const code = prompt("Enter security code to delete song (e.g. 1234):");
+                      if (code === "1234") {
+                        onDeleteSong(song.id);
+                      } else if (code !== null) {
+                        toast.error("Invalid security code");
+                      }
+                    }}
+                    className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
+                    title="Delete Song"
+                  >
+                    <MoreVertical size={18} />
+                  </button>
+                )}
               </div>
             </div>
           ))
@@ -1432,13 +1488,13 @@ const PlaylistModal = ({
   );
 };
 
-const HomePage = ({ onPlay, user, songs, loadingSongs, onDownload, onAddToPlaylist }: { 
+const HomePage = ({ onPlay, user, songs, loadingSongs, onAddToPlaylist, onDeleteSong }: { 
   onPlay: (song: Song) => void; 
   user: User | null; 
   songs: Song[]; 
   loadingSongs: boolean;
-  onDownload: (song: Song) => void;
   onAddToPlaylist: (song: Song) => void;
+  onDeleteSong: (id: string) => void;
 }) => {
   const isSubscribed = user?.subscription !== 'none' && user?.subscriptionEndsAt && user.subscriptionEndsAt > Date.now();
   const isPlus = user?.subscription === 'plus';
@@ -1492,23 +1548,12 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onDownload, onAddToPlayli
                     >
                       <Play size={24} fill="white" className="ml-1" />
                     </button>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => onDownload(song)}
-                        className={cn(
-                          "w-10 h-10 rounded-full flex items-center justify-center transition-transform hover:scale-110 shadow-xl",
-                          isPro ? "bg-emerald-500 text-white" : "bg-zinc-800/80 text-zinc-400"
-                        )}
-                      >
-                        <Download size={20} />
-                      </button>
-                      <button 
-                        onClick={() => onAddToPlaylist(song)}
-                        className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center transition-transform hover:scale-110 shadow-xl"
-                      >
-                        <Plus size={20} />
-                      </button>
-                    </div>
+                    <button 
+                      onClick={() => onAddToPlaylist(song)}
+                      className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center transition-transform hover:scale-110 shadow-xl"
+                    >
+                      <Plus size={20} />
+                    </button>
                   </div>
                 </div>
                 <div className="mt-3">
@@ -1557,7 +1602,7 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onDownload, onAddToPlayli
                 </div>
                 <p className="text-sm text-zinc-500 truncate">{song.artist}</p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
                 <button 
                   onClick={() => onAddToPlaylist(song)}
                   className="p-2 text-zinc-400 hover:text-white transition-colors"
@@ -1565,15 +1610,22 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onDownload, onAddToPlayli
                 >
                   <Plus size={20} />
                 </button>
-                <button 
-                  onClick={() => onDownload(song)}
-                  className={cn(
-                    "p-2 rounded-full transition-colors",
-                    isPro ? "text-emerald-500 hover:bg-emerald-500/10" : "text-zinc-600"
-                  )}
-                >
-                  <Download size={20} />
-                </button>
+                {user?.isAdmin && (
+                  <button 
+                    onClick={() => {
+                      const code = prompt("Enter security code to delete song (e.g. 1234):");
+                      if (code === "1234") {
+                        onDeleteSong(song.id);
+                      } else if (code !== null) {
+                        toast.error("Invalid security code");
+                      }
+                    }}
+                    className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
+                    title="Delete Song"
+                  >
+                    <MoreVertical size={20} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -1589,7 +1641,9 @@ const LibraryPage = ({
   onCreatePlaylist,
   onUpdatePlaylist,
   onRefresh,
-  onRefreshUser
+  onRefreshUser,
+  onDeleteSong,
+  onDeletePlaylist
 }: { 
   user: User | null; 
   onPlay: (song: Song) => void;
@@ -1597,6 +1651,8 @@ const LibraryPage = ({
   onUpdatePlaylist: (playlistId: string, songs: Song[]) => void;
   onRefresh: () => void;
   onRefreshUser: () => void;
+  onDeleteSong: (id: string) => void;
+  onDeletePlaylist: (id: string) => void;
 }) => {
   const isPro = user?.subscription === 'pro';
   const limit = isPro ? 10 : 2;
@@ -1640,16 +1696,41 @@ const LibraryPage = ({
     toast.success("Position updated");
   };
 
+  const handleRemoveFromPlaylist = (playlistId: string, songIndex: number) => {
+    if (!viewingPlaylist) return;
+    const newSongs = [...viewingPlaylist.songs];
+    newSongs.splice(songIndex, 1);
+    
+    onUpdatePlaylist(playlistId, newSongs);
+    setViewingPlaylist({ ...viewingPlaylist, songs: newSongs });
+    toast.success("Song deleted from playlist");
+  };
+
   if (viewingPlaylist) {
     return (
       <div className="p-6 md:p-10 pb-32">
-        <button 
-          onClick={() => setViewingPlaylist(null)}
-          className="flex items-center gap-2 text-zinc-400 hover:text-white mb-8 transition-colors"
-        >
-          <SkipBack size={18} />
-          Back to Library
-        </button>
+        <div className="flex items-center justify-between mb-8">
+          <button 
+            onClick={() => setViewingPlaylist(null)}
+            className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors"
+          >
+            <SkipBack size={18} />
+            Back to Library
+          </button>
+          
+          <button 
+            onClick={() => {
+              if (window.confirm("Are you sure you want to delete this playlist?")) {
+                onDeletePlaylist(viewingPlaylist.id);
+                setViewingPlaylist(null);
+              }
+            }}
+            className="flex items-center gap-2 text-zinc-500 hover:text-netflix-red transition-colors text-xs font-bold uppercase tracking-widest"
+          >
+            <Trash2 size={16} />
+            Delete Playlist
+          </button>
+        </div>
 
         <div className="flex items-end gap-6 mb-10">
           <div className="w-48 h-48 bg-netflix-red/10 text-netflix-red rounded-2xl flex items-center justify-center shadow-2xl">
@@ -1695,14 +1776,29 @@ const LibraryPage = ({
                   <p className="text-xs text-zinc-500 truncate">{song.artist}</p>
                 </div>
               </div>
-              <div className="relative">
+              <div className="relative group/menu">
                 <button 
-                  onClick={() => handleMoveSong(viewingPlaylist.id, index)}
                   className="p-2 text-zinc-500 hover:text-white transition-colors"
-                  title="Edit Position"
+                  title="More Options"
                 >
                   <MoreVertical size={20} />
                 </button>
+                <div className="absolute right-0 top-full mt-1 w-48 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all">
+                  <button 
+                    onClick={() => handleMoveSong(viewingPlaylist.id, index)}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-xs font-bold text-white hover:bg-white/5 transition-colors"
+                  >
+                    <ArrowUpCircle size={14} />
+                    Move Position
+                  </button>
+                  <button 
+                    onClick={() => handleRemoveFromPlaylist(viewingPlaylist.id, index)}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-xs font-bold text-white hover:bg-white/5 transition-colors border-t border-white/5"
+                  >
+                    <Trash2 size={14} />
+                    Delete Song
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -1777,8 +1873,21 @@ const LibraryPage = ({
                   <h2 className="text-xl font-bold">{playlist.name}</h2>
                   <p className="text-sm text-zinc-500">{playlist.songs.length} songs</p>
                 </div>
-                <div className="w-12 h-12 bg-netflix-red/10 text-netflix-red rounded-full flex items-center justify-center">
-                  <Library size={24} />
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => {
+                      if (window.confirm(`Are you sure you want to delete "${playlist.name}"?`)) {
+                        onDeletePlaylist(playlist.id);
+                      }
+                    }}
+                    className="w-10 h-10 bg-white/5 text-zinc-500 hover:text-netflix-red hover:bg-netflix-red/10 rounded-full flex items-center justify-center transition-all"
+                    title="Delete Playlist"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                  <div className="w-12 h-12 bg-netflix-red/10 text-netflix-red rounded-full flex items-center justify-center">
+                    <Library size={24} />
+                  </div>
                 </div>
               </div>
               
@@ -1833,13 +1942,14 @@ const LibraryPage = ({
   );
 };
 
-const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAddToPlaylist }: { 
+const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAddToPlaylist, onDeleteSong }: { 
   user: User | null; 
   onPlay: (song: Song) => void; 
   songs: Song[];
   onDownload: (song: Song) => void;
   onRemoveDownload: (songId: string) => void;
   onAddToPlaylist: (song: Song) => void;
+  onDeleteSong: (id: string) => void;
 }) => {
   const isPro = user?.subscription === 'pro';
   const downloadedSongs = songs.filter(s => user?.downloads?.includes(s.id));
@@ -1899,9 +2009,26 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAd
                     <button 
                       onClick={() => onAddToPlaylist(song)}
                       className="p-2 text-zinc-400 hover:text-white"
+                      title="Add to Playlist"
                     >
                       <Plus size={20} />
                     </button>
+                    {user?.isAdmin && (
+                      <button 
+                        onClick={() => {
+                          const code = prompt("Enter security code to delete song (e.g. 1234):");
+                          if (code === "1234") {
+                            onDeleteSong(song.id);
+                          } else if (code !== null) {
+                            toast.error("Invalid security code");
+                          }
+                        }}
+                        className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
+                        title="Delete Song"
+                      >
+                        <MoreVertical size={20} />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1937,12 +2064,6 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAd
                     className="p-2 text-zinc-400 hover:text-white"
                   >
                     <Plus size={20} />
-                  </button>
-                  <button 
-                    onClick={() => onDownload(song)}
-                    className="p-2 text-netflix-red"
-                  >
-                    <Download size={20} />
                   </button>
                 </div>
               </div>
@@ -1994,47 +2115,30 @@ const SettingsPage = ({
       const codeDoc = querySnapshot.docs[0];
       const codeData = codeDoc.data();
       
-      const type = codeData.type || 'subscription';
+      const planType = (codeData.value as SubscriptionType) || 'plus';
+      const daysToAdd = codeData.days || 30;
       
-      if (type === 'coin') {
-        const amount = Number(codeData.value) || 0;
-        const currentCoins = user.coins || 0;
-        await onUpdateSettings({ coins: currentCoins + amount });
-        
-        await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
-          used: true,
-          usedBy: user.id,
-          usedAt: serverTimestamp()
-        });
-        
-        setRedeemCode('');
-        toast.success(`Successfully redeemed ${amount} coins!`);
-      } else {
-        const planType = (codeData.value as SubscriptionType) || 'plus';
-        const daysToAdd = codeData.days || 30;
-        
-        const currentEndsAt = typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now() 
-          ? user.subscriptionEndsAt 
-          : Date.now();
-        
-        let newEndsAt = currentEndsAt + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
+      const currentEndsAt = typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now() 
+        ? user.subscriptionEndsAt 
+        : Date.now();
+      
+      let newEndsAt = currentEndsAt + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
 
-        // Safety cap: Don't allow more than 10 years
-        const tenYearsFromNow = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
-        if (newEndsAt > tenYearsFromNow) {
-          newEndsAt = Date.now() + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
-        }
-
-        await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
-          used: true,
-          usedBy: user.id,
-          usedAt: serverTimestamp()
-        });
-
-        onUpdateSub(planType, newEndsAt);
-        setRedeemCode('');
-        toast.success(`Successfully redeemed ${daysToAdd} days of ${planType.toUpperCase()}!`);
+      // Safety cap: Don't allow more than 10 years
+      const tenYearsFromNow = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
+      if (newEndsAt > tenYearsFromNow) {
+        newEndsAt = Date.now() + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
       }
+
+      await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
+        used: true,
+        usedBy: user.id,
+        usedAt: serverTimestamp()
+      });
+
+      onUpdateSub(planType, newEndsAt);
+      setRedeemCode('');
+      toast.success(`Successfully redeemed ${daysToAdd} days of ${planType.toUpperCase()}!`);
     } catch (error: any) {
       toast.error(error.message || 'Failed to redeem code');
     } finally {
@@ -2067,11 +2171,6 @@ const SettingsPage = ({
                   <h3 className="font-bold text-xl truncate max-w-[200px] md:max-w-none">{user?.email}</h3>
                   <div className="flex items-center gap-2">
                     <p className="text-sm text-zinc-500">Member since 2024</p>
-                    <div className="w-1 h-1 rounded-full bg-zinc-700" />
-                    <div className="flex items-center gap-1 text-amber-500 font-bold text-sm">
-                      <Zap size={14} fill="currentColor" />
-                      {user?.coins || 0} Coins
-                    </div>
                   </div>
                 </div>
               </div>
@@ -2231,15 +2330,15 @@ const SettingsPage = ({
   );
 };
 
-const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: Song[]; onRefreshSongs: () => void }) => {
+const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User | null; songs: Song[]; onRefreshSongs: () => void; onDeleteSong: (id: string) => void }) => {
   const [codes, setCodes] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [newCode, setNewCode] = useState({ 
     code: '', 
-    type: 'subscription' as 'subscription' | 'coin',
-    value: 'pro', // plan name or coin amount
+    type: 'subscription' as 'subscription',
+    value: 'pro', // plan name
     days: 30 
   });
 
@@ -2351,13 +2450,9 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
   };
 
   const handleDeleteSong = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'songs', id));
-      toast.success("Song deleted");
+    if (confirm("Are you sure you want to delete this song permanently?")) {
+      onDeleteSong(id);
       setSongToDelete(null);
-      onRefreshSongs();
-    } catch (error) {
-      toast.error("Failed to delete song");
     }
   };
 
@@ -2446,22 +2541,9 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                 <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Code Type</label>
                 <div className="flex bg-black p-1 rounded-lg border border-white/10">
                   <button 
-                    onClick={() => setNewCode({ ...newCode, type: 'subscription', value: 'pro' })}
-                    className={cn(
-                      "flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-all",
-                      newCode.type === 'subscription' ? "bg-netflix-red text-white" : "text-zinc-500"
-                    )}
+                    className="flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-all bg-netflix-red text-white"
                   >
                     Subscription
-                  </button>
-                  <button 
-                    onClick={() => setNewCode({ ...newCode, type: 'coin', value: 100 })}
-                    className={cn(
-                      "flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-all",
-                      newCode.type === 'coin' ? "bg-amber-500 text-white" : "text-zinc-500"
-                    )}
-                  >
-                    Coins
                   </button>
                 </div>
               </div>
@@ -2485,49 +2567,34 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                 </div>
               </div>
 
-              {newCode.type === 'subscription' ? (
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Plan</label>
-                    <select 
-                      value={newCode.value}
-                      onChange={(e) => setNewCode({ ...newCode, value: e.target.value })}
-                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
-                    >
-                      <option value="plus">Plus</option>
-                      <option value="pro">Pro</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Days</label>
-                    <input 
-                      type="number" 
-                      value={newCode.days}
-                      onChange={(e) => setNewCode({ ...newCode, days: parseInt(e.target.value) })}
-                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
-                    />
-                  </div>
-                </div>
-              ) : (
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Coin Amount</label>
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Plan</label>
+                  <select 
+                    value={newCode.value}
+                    onChange={(e) => setNewCode({ ...newCode, value: e.target.value })}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
+                  >
+                    <option value="plus">Plus</option>
+                    <option value="pro">Pro</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Days</label>
                   <input 
                     type="number" 
-                    value={newCode.value}
-                    onChange={(e) => setNewCode({ ...newCode, value: parseInt(e.target.value) })}
-                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-amber-500 text-sm"
+                    value={newCode.days}
+                    onChange={(e) => setNewCode({ ...newCode, days: parseInt(e.target.value) })}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:border-netflix-red text-sm"
                   />
                 </div>
-              )}
+              </div>
 
               <button 
                 onClick={handleCreateCode}
-                className={cn(
-                  "w-full py-3 text-white font-bold rounded-lg transition-colors mt-4",
-                  newCode.type === 'subscription' ? "bg-netflix-red hover:bg-red-700" : "bg-amber-500 hover:bg-amber-600"
-                )}
+                className="w-full py-3 text-white font-bold rounded-lg transition-colors mt-4 bg-netflix-red hover:bg-red-700"
               >
-                Create {newCode.type === 'subscription' ? 'Subscription' : 'Coin'} Code
+                Create Subscription Code
               </button>
             </div>
           </section>
@@ -2681,24 +2748,14 @@ const AdminPage = ({ user, songs, onRefreshSongs }: { user: User | null; songs: 
                       <tr key={code.id} className="border-b border-white/5 last:border-0">
                         <td className="py-4 font-mono font-bold">{code.code}</td>
                         <td className="py-4">
-                          <span className={cn(
-                            "px-2 py-0.5 rounded text-[8px] font-bold uppercase",
-                            code.type === 'coin' ? "bg-amber-500/20 text-amber-500" : "bg-blue-500/20 text-blue-500"
-                          )}>
-                            {code.type || 'subscription'}
+                          <span className="px-2 py-0.5 rounded text-[8px] font-bold uppercase bg-blue-500/20 text-blue-500">
+                            Subscription
                           </span>
                         </td>
                         <td className="py-4">
-                          {code.type === 'coin' ? (
-                            <span className="flex items-center gap-1 text-amber-500 font-bold">
-                              <Zap size={12} fill="currentColor" />
-                              {code.value}
-                            </span>
-                          ) : (
-                            <span className="font-bold">
-                              {String(code.value).toUpperCase()} ({code.days}d)
-                            </span>
-                          )}
+                          <span className="font-bold">
+                            {String(code.value).toUpperCase()} ({code.days}d)
+                          </span>
                         </td>
                         <td className="py-4">
                           <span className={cn(
@@ -2913,7 +2970,7 @@ export default function App() {
       }
     };
 
-    const sub = CapApp.addListener('appUrlOpen', (data: any) => {
+    const subPromise = CapApp.addListener('appUrlOpen', (data: any) => {
       handleDeepLink(data.url);
     });
 
@@ -2925,7 +2982,7 @@ export default function App() {
     });
 
     return () => {
-      sub.remove();
+      subPromise.then(sub => sub.remove());
     };
   }, []);
 
@@ -2964,6 +3021,21 @@ export default function App() {
       console.error("Error fetching songs:", error);
     } finally {
       setLoadingSongs(false);
+    }
+  };
+
+  const handleDeleteSong = async (id: string) => {
+    if (!user?.isAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'songs', id));
+      toast.success("Song deleted permanently");
+      handleRefreshSongs();
+      if (currentSong?.id === id) {
+        setCurrentSong(null);
+        setIsPlaying(false);
+      }
+    } catch (error) {
+      toast.error("Failed to delete song");
     }
   };
 
@@ -3496,6 +3568,21 @@ export default function App() {
     }
   };
 
+  const handleDeletePlaylist = async (playlistId: string) => {
+    if (!user) return;
+    try {
+      const userDocRef = doc(db, 'users', user.id);
+      const updatedPlaylists = user.playlists.filter(pl => pl.id !== playlistId);
+      
+      await updateDoc(userDocRef, { playlists: updatedPlaylists });
+      setUser({ ...user, playlists: updatedPlaylists });
+      toast.success("Playlist deleted");
+    } catch (error) {
+      console.error("Error deleting playlist:", error);
+      toast.error("Failed to delete playlist");
+    }
+  };
+
   const handlePlay = (song: Song) => {
     if (!user) return;
     
@@ -3578,6 +3665,11 @@ export default function App() {
     );
   }
 
+  const handleOpenPlaylistModal = (song: Song) => {
+    setSelectedSongForPlaylist(song);
+    setShowPlaylistModal(true);
+  };
+
   if (!user) {
     return (
       <>
@@ -3601,12 +3693,23 @@ export default function App() {
         <main className="flex-1 overflow-y-auto">
           <MobileHeader user={user} />
           <Routes>
-            <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
-            <Route path="/search" element={<SearchPage songs={songs} onPlay={handlePlay} user={user} onDownload={handleDownloadToApp} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
-            <Route path="/library" element={<LibraryPage user={user} onPlay={handlePlay} onCreatePlaylist={handleCreatePlaylist} onUpdatePlaylist={handleUpdatePlaylist} onRefresh={handleRefreshSongs} onRefreshUser={handleRefreshUser} />} />
-            <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onRemoveDownload={handleRemoveDownload} onAddToPlaylist={(song) => { setSelectedSongForPlaylist(song); setShowPlaylistModal(true); }} />} />
+            <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onAddToPlaylist={handleOpenPlaylistModal} onDeleteSong={handleDeleteSong} />} />
+            <Route path="/search" element={<SearchPage songs={songs} onPlay={handlePlay} user={user} onAddToPlaylist={handleOpenPlaylistModal} onDeleteSong={handleDeleteSong} />} />
+            <Route path="/library" element={
+              <LibraryPage 
+                user={user} 
+                onPlay={handlePlay} 
+                onCreatePlaylist={handleCreatePlaylist} 
+                onUpdatePlaylist={handleUpdatePlaylist} 
+                onRefresh={handleRefreshSongs} 
+                onRefreshUser={handleRefreshUser} 
+                onDeleteSong={handleDeleteSong}
+                onDeletePlaylist={handleDeletePlaylist}
+              />
+            } />
+            <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onRemoveDownload={handleRemoveDownload} onAddToPlaylist={handleOpenPlaylistModal} onDeleteSong={handleDeleteSong} />} />
             <Route path="/settings" element={<SettingsPage user={user} onUpdateSub={handleUpdateSub} onLogout={handleLogout} onRefresh={handleRefreshUser} onUpdateSettings={handleUpdateSettings} />} />
-            <Route path="/admin" element={<AdminPage user={user} songs={songs} onRefreshSongs={handleRefreshSongs} />} />
+            <Route path="/admin" element={<AdminPage user={user} songs={songs} onRefreshSongs={handleRefreshSongs} onDeleteSong={handleDeleteSong} />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </main>
@@ -3622,6 +3725,8 @@ export default function App() {
           setIsPlaying(false);
         }}
         onDownload={handleDownloadToApp}
+        onDelete={handleDeleteSong}
+        onAddToPlaylist={handleOpenPlaylistModal}
         user={user}
       />
 
