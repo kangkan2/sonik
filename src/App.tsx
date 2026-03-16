@@ -49,7 +49,8 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
   GoogleAuthProvider,
-  signInWithPopup
+  signInWithPopup,
+  signInWithCredential
 } from 'firebase/auth';
 import { 
   doc, 
@@ -71,6 +72,8 @@ import { MOCK_SONGS } from './constants';
 import { scanLocalMusic } from './lib/offlineMusic';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Browser } from '@capacitor/browser';
+import { App as CapApp } from '@capacitor/app';
 
 const CountdownTimer = ({ endsAt }: { endsAt: any }) => {
   const [timeLeft, setTimeLeft] = useState<string>('');
@@ -1094,54 +1097,19 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
   const handleGoogleSignIn = async () => {
     setLoading(true);
     try {
-      const provider = new GoogleAuthProvider();
-      const userCredential = await signInWithPopup(auth, provider);
-      const firebaseUser = userCredential.user;
-      
-      // Sync with Firestore
-      const userDocRef = doc(db, 'users', firebaseUser.uid);
-      const userDoc = await getDoc(userDocRef);
-      
-      let userData: User;
-      
-      if (userDoc.exists()) {
-        const data = userDoc.data();
-        userData = {
-          id: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          subscription: data.subscription || 'plus',
-          playlists: data.playlists || [],
-          defaultVolume: data.defaultVolume ?? 0.5,
-          aiBoostMode: data.aiBoostMode || 'manual',
-          cleanAudio: data.cleanAudio ?? false,
-          profileColor: data.profileColor || `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`
-        };
+      if (Capacitor.isNativePlatform()) {
+        // Use Capacitor Browser for native platforms
+        const authUrl = `${window.location.origin}/api/auth/google`;
+        await Browser.open({ url: authUrl });
       } else {
-        const randomColor = `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`;
-        userData = {
-          id: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          subscription: 'plus',
-          playlists: [],
-          defaultVolume: 0.5,
-          aiBoostMode: 'manual',
-          cleanAudio: false,
-          profileColor: randomColor
-        };
-        await setDoc(userDocRef, {
-          email: userData.email,
-          subscription: userData.subscription,
-          playlists: userData.playlists,
-          defaultVolume: userData.defaultVolume,
-          aiBoostMode: userData.aiBoostMode,
-          cleanAudio: userData.cleanAudio,
-          profileColor: userData.profileColor,
-          createdAt: serverTimestamp()
-        });
+        // Web fallback
+        const provider = new GoogleAuthProvider();
+        const userCredential = await signInWithPopup(auth, provider);
+        const firebaseUser = userCredential.user;
+        
+        // Sync with Firestore (existing logic)
+        await syncUserWithFirestore(firebaseUser);
       }
-      
-      onLogin(userData);
-      toast.success('Signed in with Google!');
     } catch (error: any) {
       console.error(error);
       if (error.code !== 'auth/popup-closed-by-user') {
@@ -1150,6 +1118,52 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const syncUserWithFirestore = async (firebaseUser: any) => {
+    const userDocRef = doc(db, 'users', firebaseUser.uid);
+    const userDoc = await getDoc(userDocRef);
+    
+    let userData: User;
+    
+    if (userDoc.exists()) {
+      const data = userDoc.data();
+      userData = {
+        id: firebaseUser.uid,
+        email: firebaseUser.email || '',
+        subscription: data.subscription || 'plus',
+        playlists: data.playlists || [],
+        defaultVolume: data.defaultVolume ?? 0.5,
+        aiBoostMode: data.aiBoostMode || 'manual',
+        cleanAudio: data.cleanAudio ?? false,
+        profileColor: data.profileColor || `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`
+      };
+    } else {
+      const randomColor = `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`;
+      userData = {
+        id: firebaseUser.uid,
+        email: firebaseUser.email || '',
+        subscription: 'plus',
+        playlists: [],
+        defaultVolume: 0.5,
+        aiBoostMode: 'manual',
+        cleanAudio: false,
+        profileColor: randomColor
+      };
+      await setDoc(userDocRef, {
+        email: userData.email,
+        subscription: userData.subscription,
+        playlists: userData.playlists,
+        defaultVolume: userData.defaultVolume,
+        aiBoostMode: userData.aiBoostMode,
+        cleanAudio: userData.cleanAudio,
+        profileColor: userData.profileColor,
+        createdAt: serverTimestamp()
+      });
+    }
+    
+    onLogin(userData);
+    toast.success('Signed in with Google!');
   };
 
   return (
@@ -2874,6 +2888,46 @@ export default function App() {
   const [selectedSongForPlaylist, setSelectedSongForPlaylist] = useState<Song | null>(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const location = useLocation();
+
+  // Handle deep links for Google Sign-in
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    const handleDeepLink = async (url: string) => {
+      if (url.includes('sonik://auth-success')) {
+        const urlObj = new URL(url.replace('sonik://', 'http://sonik/')); // URL constructor doesn't like custom schemes
+        const accessToken = urlObj.searchParams.get('access_token');
+        const idToken = urlObj.searchParams.get('id_token');
+
+        if (idToken) {
+          try {
+            const credential = GoogleAuthProvider.credential(idToken, accessToken || undefined);
+            await signInWithCredential(auth, credential);
+            await Browser.close();
+            toast.success('Signed in with Google!');
+          } catch (error: any) {
+            console.error('Deep link auth error:', error);
+            toast.error('Authentication failed via deep link');
+          }
+        }
+      }
+    };
+
+    const sub = CapApp.addListener('appUrlOpen', (data: any) => {
+      handleDeepLink(data.url);
+    });
+
+    // Check if app was opened via deep link initially
+    CapApp.getLaunchUrl().then((data) => {
+      if (data && data.url) {
+        handleDeepLink(data.url);
+      }
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, []);
 
   const handleLogout = async () => {
     try {
