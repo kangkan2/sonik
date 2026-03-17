@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "music-b3be5.web.app"
+  process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "https://music-b3be5.web.app/api/auth/google/callback"
 );
 
 if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {

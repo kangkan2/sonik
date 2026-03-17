@@ -5,7 +5,7 @@ import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAXw6LdRFL3iM_e97amJDrVEzfuyYC9N6w",
-  authDomain: "music-b3be5.firebaseapp.com",
+  authDomain: "music-b3be5.web.app",
   projectId: "music-b3be5",
   storageBucket: "music-b3be5.firebasestorage.app",
   messagingSenderId: "593321664127",
