@@ -10,17 +10,24 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "https://music-b3be5.web.app/api/auth/google/callback"
-);
-
-if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-  console.warn("WARNING: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is not set. Google Sign-In will not work.");
-}
+// Helper to get dynamic OAuth client
+const getOAuthClient = (req: express.Request) => {
+  const host = req.get("host");
+  // Use https if not on localhost
+  const protocol = host?.includes("localhost") ? "http" : "https";
+  const redirectUri = `${protocol}://${host}/api/auth/google/callback`;
+  
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri
+  );
+};
 
 async function startServer() {
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    console.warn("WARNING: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is not set. Google Sign-In will not work.");
+  }
   const app = express();
   const PORT = 3000;
 
@@ -36,7 +43,8 @@ async function startServer() {
       'https://www.googleapis.com/auth/userinfo.email',
     ];
 
-    const url = oauth2Client.generateAuthUrl({
+    const client = getOAuthClient(req);
+    const url = client.generateAuthUrl({
       access_type: 'offline',
       scope: scopes,
     });
@@ -49,7 +57,8 @@ async function startServer() {
     const { code } = req.query;
 
     try {
-      const { tokens } = await oauth2Client.getToken(code as string);
+      const client = getOAuthClient(req);
+      const { tokens } = await client.getToken(code as string);
       // In a real app, you'd verify the token and get user info
       // Then generate a session or just pass the token back to the app
       
