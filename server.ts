@@ -47,6 +47,7 @@ async function startServer() {
     const url = client.generateAuthUrl({
       access_type: 'offline',
       scope: scopes,
+      prompt: 'select_account'
     });
 
     res.redirect(url);
