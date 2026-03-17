@@ -32,12 +32,16 @@ import {
   Users,
   MoreVertical,
   ArrowUpCircle,
+  ListMusic,
   WifiOff,
   Minimize2,
   Maximize2,
   GripVertical,
   Sparkles,
-  Zap
+  Zap,
+  Palette,
+  AlertTriangle,
+  Ticket
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'react-hot-toast';
@@ -68,6 +72,14 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import * as mm from 'music-metadata-browser';
+import { Buffer } from 'buffer';
+
+// Ensure Buffer is available globally for music-metadata-browser
+if (typeof window !== 'undefined') {
+  (window as any).Buffer = Buffer;
+}
+
 import { User, Song, Playlist, SubscriptionType } from './types';
 import { MOCK_SONGS } from './constants';
 import { scanLocalMusic } from './lib/offlineMusic';
@@ -283,6 +295,41 @@ const MobileNav = () => {
   );
 };
 
+const MarqueeText = ({ text, className }: { text: string; className?: string }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [shouldMarquee, setShouldMarquee] = useState(false);
+
+  useEffect(() => {
+    if (containerRef.current && textRef.current) {
+      setShouldMarquee(textRef.current.offsetWidth > containerRef.current.offsetWidth);
+    }
+  }, [text]);
+
+  return (
+    <div ref={containerRef} className={cn("marquee-container", className)}>
+      <span 
+        ref={textRef} 
+        className={cn(
+          "inline-block whitespace-nowrap",
+          shouldMarquee && "animate-marquee"
+        )}
+        style={shouldMarquee ? { '--duration': `${text.length * 0.2}s` } as React.CSSProperties : {}}
+      >
+        {text}
+      </span>
+      {shouldMarquee && (
+        <span 
+          className="inline-block whitespace-nowrap animate-marquee ml-4"
+          style={{ '--duration': `${text.length * 0.2}s` } as React.CSSProperties}
+        >
+          {text}
+        </span>
+      )}
+    </div>
+  );
+};
+
 const Player = ({ 
   currentSong, 
   isPlaying, 
@@ -320,7 +367,55 @@ const Player = ({
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
 
   const isPro = user?.subscription === 'pro';
+  const isPlus = user?.subscription === 'plus';
   const isSubscribed = user?.subscription !== 'none' && user?.subscriptionEndsAt && user.subscriptionEndsAt > Date.now();
+
+  const [showAd, setShowAd] = useState(false);
+  const [adCountdown, setAdCountdown] = useState(5);
+
+  useEffect(() => {
+    if ('mediaSession' in navigator && currentSong) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentSong.title,
+        artist: currentSong.artist,
+        album: 'Sonik Music',
+        artwork: [
+          { src: currentSong.thumbnail, sizes: '96x96', type: 'image/png' },
+          { src: currentSong.thumbnail, sizes: '128x128', type: 'image/png' },
+          { src: currentSong.thumbnail, sizes: '192x192', type: 'image/png' },
+          { src: currentSong.thumbnail, sizes: '256x256', type: 'image/png' },
+          { src: currentSong.thumbnail, sizes: '384x384', type: 'image/png' },
+          { src: currentSong.thumbnail, sizes: '512x512', type: 'image/png' },
+        ]
+      });
+
+      navigator.mediaSession.setActionHandler('play', () => onTogglePlay());
+      navigator.mediaSession.setActionHandler('pause', () => onTogglePlay());
+      navigator.mediaSession.setActionHandler('previoustrack', () => onPrev());
+      navigator.mediaSession.setActionHandler('nexttrack', () => onNext());
+      
+      // Update playback state
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    }
+  }, [currentSong, isPlaying, onTogglePlay, onNext, onPrev]);
+
+  useEffect(() => {
+    if (currentSong && isPlus && !isPro) {
+      setShowAd(true);
+      setAdCountdown(5);
+      const timer = setInterval(() => {
+        setAdCountdown(prev => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            setShowAd(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [currentSong?.id, isPlus, isPro]);
 
   useEffect(() => {
     if (user?.defaultVolume !== undefined) {
@@ -396,8 +491,10 @@ const Player = ({
     const loadAudio = async () => {
       if (currentSong && audioRef.current) {
         try {
-          // Reset progress
+          // Reset progress and audio state to prevent race condition with playAudio
           setProgress(0);
+          audioRef.current.removeAttribute('src');
+          audioRef.current.load();
           
           // 1. Check if song is in offline cache (Web/PWA)
           const cache = await caches.open('sonik-offline-songs');
@@ -553,7 +650,7 @@ const Player = ({
           />
           
           <div className="flex-1 min-w-0">
-            <h4 className="text-xs font-semibold truncate pr-6">{currentSong.title}</h4>
+            <MarqueeText text={currentSong.title} className="text-xs font-semibold pr-6" />
             <p className="text-[10px] text-zinc-400 truncate">{currentSong.artist}</p>
             <div className="flex items-center gap-3 mt-1">
               <button onClick={onPrev} className="text-zinc-400 hover:text-white transition-colors">
@@ -590,6 +687,15 @@ const Player = ({
                 title={user?.aiBoostMode === 'off' ? "AI Boost Disabled" : `AI Boost: ${Math.round(boost * 100)}%`}
               >
                 <Zap size={14} fill={boost > 1 ? "currentColor" : "none"} />
+              </button>
+            )}
+            {isPlus && !isPro && (
+              <button 
+                onClick={() => toast.error("AI Boost is a Pro feature!")}
+                className="p-1.5 rounded-lg text-zinc-500/50 cursor-not-allowed"
+                title="Pro Feature"
+              >
+                <Zap size={14} />
               </button>
             )}
             <button 
@@ -669,7 +775,7 @@ const Player = ({
                 />
                 <div className="overflow-hidden flex-1">
                   <div className="flex items-center gap-2">
-                    <h4 className="text-xs md:text-sm font-semibold truncate flex-1">{currentSong.title}</h4>
+                    <MarqueeText text={currentSong.title} className="text-xs md:text-sm font-semibold flex-1" />
                     {user?.downloads?.includes(currentSong.id) && (
                       <WifiOff size={12} className="text-emerald-500 flex-shrink-0" title="Playing offline" />
                     )}
@@ -734,6 +840,13 @@ const Player = ({
                 <button onClick={onNext} className="text-zinc-400 hover:text-white transition-colors">
                   <SkipForward size={20} fill="currentColor" />
                 </button>
+                <button 
+                  onClick={() => onAddToPlaylist(currentSong)}
+                  className="text-zinc-400 hover:text-white transition-colors"
+                  title="Add to Playlist"
+                >
+                  <Plus size={20} />
+                </button>
               </div>
               
               <div className="hidden md:flex items-center gap-2 w-full max-w-md">
@@ -790,12 +903,13 @@ const Player = ({
                     "flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all",
                     boost > 1 
                       ? "bg-amber-500 text-black shadow-[0_0_10px_rgba(245,158,11,0.5)]" 
-                      : "text-zinc-400 hover:text-white",
+                      : (isPlus && !isPro) ? "text-zinc-500/50 cursor-not-allowed" : "text-zinc-400 hover:text-white",
                     user?.aiBoostMode === 'off' && "opacity-20 cursor-not-allowed"
                   )}
+                  title={(isPlus && !isPro) ? "Pro Feature" : ""}
                 >
                   <Sparkles size={12} className={cn(boost > 1 && "animate-pulse")} />
-                  {boost > 1 ? "250% BOOST" : "AI BOOST"}
+                  {boost > 1 ? "250% BOOST" : (isPlus && !isPro) ? "PRO ONLY" : "AI BOOST"}
                 </button>
               </div>
 
@@ -824,32 +938,16 @@ const Player = ({
                       exit={{ opacity: 0, y: 10 }}
                       className="absolute bottom-full right-0 mb-2 w-48 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50"
                     >
-                      {user?.isAdmin && (
-                        <button 
-                          onClick={() => {
-                            const code = prompt("Enter security code to delete song (e.g. 1234):");
-                            if (code === "1234") {
-                              onDelete(currentSong.id);
-                              setShowMenu(false);
-                            } else if (code !== null) {
-                              toast.error("Invalid security code");
-                            }
-                          }}
-                          className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-netflix-red hover:bg-white/5 transition-colors"
-                        >
-                          <Trash2 size={16} />
-                          Delete Song
-                        </button>
-                      )}
+                      <div className="px-4 py-3 text-xs text-zinc-500 uppercase font-bold border-b border-white/5">Options</div>
                       <button 
                         onClick={() => {
-                          toast.success('Link copied to clipboard!');
+                          toast.success('Added to queue');
                           setShowMenu(false);
                         }}
                         className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white hover:bg-white/5 transition-colors"
                       >
-                        <Share2 size={16} />
-                        Share Song
+                        <ListMusic size={16} />
+                        Add to Queue
                       </button>
                     </motion.div>
                   )}
@@ -871,15 +969,99 @@ const Player = ({
   );
 };
 
-const SubscriptionModal = ({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => Promise<void> }) => {
+const SubscriptionModal = ({ 
+  user, 
+  onLogout, 
+  onRefresh, 
+  onUpdateSub 
+}: { 
+  user: User; 
+  onLogout: () => void; 
+  onRefresh: () => Promise<void>;
+  onUpdateSub: (type: SubscriptionType, endsAt?: number) => void;
+}) => {
   const [selectedPlan, setSelectedPlan] = useState<'plus' | 'pro'>('pro');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [redeemCode, setRedeemCode] = useState('');
+  const [isRedeeming, setIsRedeeming] = useState(false);
+  const [showRedeem, setShowRedeem] = useState(false);
+  const [confirmRedeem, setConfirmRedeem] = useState<{ planType: SubscriptionType; newEndsAt: number; codeDocId: string } | null>(null);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await onRefresh();
     setIsRefreshing(false);
     toast.success('Status updated!');
+  };
+
+  const executeRedeem = async (planType: SubscriptionType, newEndsAt: number, codeDocId: string) => {
+    setIsRedeeming(true);
+    try {
+      await updateDoc(doc(db, 'redeem_codes', codeDocId), {
+        used: true,
+        usedBy: user.id,
+        usedAt: serverTimestamp()
+      });
+
+      onUpdateSub(planType, newEndsAt);
+      setRedeemCode('');
+      toast.success('Subscription activated!');
+      setShowRedeem(false);
+      setConfirmRedeem(null);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to redeem code');
+    } finally {
+      setIsRedeeming(false);
+    }
+  };
+
+  const handleRedeem = async () => {
+    if (!redeemCode.trim()) return toast.error('Please enter a code');
+    
+    setIsRedeeming(true);
+    try {
+      const q = query(collection(db, 'redeem_codes'), where('code', '==', redeemCode.trim()), where('used', '==', false));
+      const querySnapshot = await getDocs(q);
+
+      if (querySnapshot.empty) {
+        throw new Error('Invalid or already used code');
+      }
+
+      const codeDoc = querySnapshot.docs[0];
+      const codeData = codeDoc.data();
+      
+      const planType = (codeData.value as SubscriptionType) || 'plus';
+      const daysToAdd = codeData.days || 30;
+
+      // Plan checks
+      const isProActive = user.subscription === 'pro' && typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now();
+      const isPlusActive = user.subscription === 'plus' && typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now();
+
+      if (isProActive && planType === 'plus') {
+        throw new Error("This code cannot be added now because a Pro plan is currently running.");
+      }
+      
+      if (isPlusActive && planType === 'pro') {
+        throw new Error("This code cannot be added now because a Plus plan is currently running. Only Plus codes can extend your current plan.");
+      }
+      
+      const currentEndsAt = typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now() 
+        ? user.subscriptionEndsAt 
+        : Date.now();
+      
+      let newEndsAt = currentEndsAt + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
+
+      // Safety cap: Don't allow more than 10 years
+      const tenYearsFromNow = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
+      if (newEndsAt > tenYearsFromNow) {
+        newEndsAt = Date.now() + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
+      }
+
+      await executeRedeem(planType, newEndsAt, codeDoc.id);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to redeem code');
+      setIsRedeeming(false);
+    }
   };
 
   return (
@@ -892,182 +1074,224 @@ const SubscriptionModal = ({ onLogout, onRefresh }: { onLogout: () => void; onRe
         <h2 className="text-3xl font-bold text-center mb-2">Subscription Required</h2>
         <p className="text-zinc-400 text-center mb-8">Unlock the full Sonik experience with a redeem code</p>
         
-        <div className="grid md:grid-cols-2 gap-6">
-          {/* Plus Plan */}
-          <motion.div 
-            onClick={() => setSelectedPlan('plus')}
-            animate={{ 
-              y: selectedPlan === 'plus' ? [0, -12, 0] : [0, -6, 0],
-              x: selectedPlan === 'plus' ? [0, 4, -4, 0] : 0,
-              rotate: selectedPlan === 'plus' ? [0, 1, -1, 0] : 0,
-              boxShadow: selectedPlan === 'plus' ? [
-                "0 0 20px rgba(229,9,20,0.1)",
-                "0 0 35px rgba(229,9,20,0.3)",
-                "0 0 20px rgba(229,9,20,0.1)"
-              ] : "none"
-            }}
-            transition={{ 
-              duration: selectedPlan === 'plus' ? 6 : 5, 
-              repeat: Infinity, 
-              ease: "easeInOut" 
-            }}
-            whileHover={{ scale: 1.05, translateY: -8 }}
-            whileTap={{ 
-              scale: 0.95, 
-              x: [0, -6, 6, -6, 6, 0],
-              rotate: [0, -2, 2, -2, 2, 0]
-            }}
-            className={cn(
-              "rounded-xl p-6 flex flex-col relative overflow-hidden cursor-pointer group transition-all duration-500",
-              selectedPlan === 'plus' 
-                ? "bg-netflix-red/10 border border-netflix-red/50 shadow-[0_0_20px_rgba(229,9,20,0.1)]" 
-                : "bg-zinc-800/50 border border-white/5 hover:border-white/20"
-            )}
-          >
-            {selectedPlan === 'plus' && (
-              <motion.div
-                animate={{ x: ['-100%', '200%'] }}
-                transition={{ duration: 3, repeat: Infinity, ease: "linear", repeatDelay: 1 }}
-                className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent skew-x-12 pointer-events-none"
-              />
-            )}
-            <div className="mb-4">
-              <motion.h3 
-                animate={selectedPlan === 'plus' ? { scale: [1, 1.05, 1] } : {}}
-                transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-                className={cn("text-xl font-bold", selectedPlan === 'plus' ? "text-netflix-red" : "text-white")}
+        {!showRedeem ? (
+          <>
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Plus Plan */}
+              <motion.div 
+                onClick={() => setSelectedPlan('plus')}
+                animate={{ 
+                  y: selectedPlan === 'plus' ? [0, -12, 0] : [0, -6, 0],
+                  x: selectedPlan === 'plus' ? [0, 4, -4, 0] : 0,
+                  rotate: selectedPlan === 'plus' ? [0, 1, -1, 0] : 0,
+                  boxShadow: selectedPlan === 'plus' ? [
+                    "0 0 20px rgba(229,9,20,0.1)",
+                    "0 0 35px rgba(229,9,20,0.3)",
+                    "0 0 20px rgba(229,9,20,0.1)"
+                  ] : "none"
+                }}
+                transition={{ 
+                  duration: selectedPlan === 'plus' ? 6 : 5, 
+                  repeat: Infinity, 
+                  ease: "easeInOut" 
+                }}
+                whileHover={{ scale: 1.05, translateY: -8 }}
+                whileTap={{ 
+                  scale: 0.95, 
+                  x: [0, -6, 6, -6, 6, 0],
+                  rotate: [0, -2, 2, -2, 2, 0]
+                }}
+                className={cn(
+                  "rounded-xl p-6 flex flex-col relative overflow-hidden cursor-pointer group transition-all duration-500",
+                  selectedPlan === 'plus' 
+                    ? "bg-netflix-red/10 border border-netflix-red/50 shadow-[0_0_20px_rgba(229,9,20,0.1)]" 
+                    : "bg-zinc-800/50 border border-white/5 hover:border-white/20"
+                )}
               >
-                Plus
-              </motion.h3>
-              <p className="text-sm text-zinc-500 mt-1">Basic Premium Access</p>
-            </div>
-            <ul className="text-sm space-y-3 mb-8 flex-1">
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> Unlimited song play</li>
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> 2 Playlists limit</li>
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> Contains Ads</li>
-            </ul>
-            <Link 
-              to="/settings"
-              className={cn(
-                "w-full py-3 font-bold rounded-lg transition-colors text-center",
-                selectedPlan === 'plus' ? "bg-netflix-red text-white hover:bg-red-700" : "bg-white text-black hover:bg-zinc-200"
-              )}
-            >
-              Redeem Plus
-            </Link>
-          </motion.div>
+                {selectedPlan === 'plus' && (
+                  <motion.div
+                    animate={{ x: ['-100%', '200%'] }}
+                    transition={{ duration: 3, repeat: Infinity, ease: "linear", repeatDelay: 1 }}
+                    className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent skew-x-12 pointer-events-none"
+                  />
+                )}
+                <div className="mb-4">
+                  <motion.h3 
+                    animate={selectedPlan === 'plus' ? { scale: [1, 1.05, 1] } : {}}
+                    transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                    className="text-2xl font-black mb-2"
+                  >
+                    Plus
+                  </motion.h3>
+                  <p className="text-sm text-zinc-400">Essential features for casual listeners.</p>
+                </div>
+                <div className="mt-auto space-y-2">
+                  <div className="flex items-center gap-2 text-sm"><div className="w-1.5 h-1.5 rounded-full bg-netflix-red" /> Playback with ads</div>
+                  <div className="flex items-center gap-2 text-sm"><div className="w-1.5 h-1.5 rounded-full bg-netflix-red" /> 1 Playlist limit</div>
+                  <div className="flex items-center gap-2 text-sm opacity-50"><div className="w-1.5 h-1.5 rounded-full bg-zinc-600" /> No AI features</div>
+                </div>
+              </motion.div>
 
-          {/* Pro Plan */}
-          <motion.div 
-            onClick={() => setSelectedPlan('pro')}
-            animate={{ 
-              y: selectedPlan === 'pro' ? [0, -12, 0] : [0, -6, 0],
-              x: selectedPlan === 'pro' ? [0, 4, -4, 0] : 0,
-              rotate: selectedPlan === 'pro' ? [0, 1, -1, 0] : 0,
-              boxShadow: selectedPlan === 'pro' ? [
-                "0 0 20px rgba(229,9,20,0.1)",
-                "0 0 35px rgba(229,9,20,0.3)",
-                "0 0 20px rgba(229,9,20,0.1)"
-              ] : "none"
-            }}
-            transition={{ 
-              duration: selectedPlan === 'pro' ? 6 : 5, 
-              repeat: Infinity, 
-              ease: "easeInOut" 
-            }}
-            whileHover={{ scale: 1.05, translateY: -8, rotate: 0 }}
-            whileTap={{ 
-              scale: 0.95, 
-              x: [0, -6, 6, -6, 6, 0],
-              rotate: [0, -2, 2, -2, 2, 0]
-            }}
-            className={cn(
-              "rounded-xl p-6 flex flex-col relative overflow-hidden cursor-pointer group transition-all duration-500",
-              selectedPlan === 'pro' 
-                ? "bg-netflix-red/10 border border-netflix-red/50 shadow-[0_0_20px_rgba(229,9,20,0.1)]" 
-                : "bg-zinc-800/50 border border-white/5 hover:border-white/20"
-            )}
-          >
-            {selectedPlan === 'pro' && (
-              <motion.div
-                animate={{ x: ['-100%', '200%'] }}
-                transition={{ duration: 3, repeat: Infinity, ease: "linear", repeatDelay: 1 }}
-                className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent skew-x-12 pointer-events-none"
-              />
-            )}
-            <motion.div 
-              animate={{ 
-                opacity: selectedPlan === 'pro' ? [0.8, 1, 0.8] : 0.5,
-                y: selectedPlan === 'pro' ? [0, -4, 0] : 0
-              }}
-              transition={{ 
-                duration: 2, 
-                repeat: Infinity,
-                y: { duration: 3, repeat: Infinity, ease: "easeInOut" }
-              }}
-              className={cn(
-                "absolute top-0 right-0 text-[10px] font-bold px-3 py-1 rounded-bl-lg uppercase tracking-tighter transition-colors",
-                selectedPlan === 'pro' ? "bg-netflix-red text-white" : "bg-zinc-700 text-zinc-400"
-              )}
-            >
-              Best Value
-            </motion.div>
-            <div className="mb-4">
-              <motion.h3 
-                animate={selectedPlan === 'pro' ? { scale: [1, 1.05, 1] } : {}}
-                transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-                className={cn("text-xl font-bold", selectedPlan === 'pro' ? "text-netflix-red" : "text-white")}
+              {/* Pro Plan */}
+              <motion.div 
+                onClick={() => setSelectedPlan('pro')}
+                animate={{ 
+                  y: selectedPlan === 'pro' ? [0, -12, 0] : [0, -6, 0],
+                  x: selectedPlan === 'pro' ? [0, 4, -4, 0] : 0,
+                  rotate: selectedPlan === 'pro' ? [0, 1, -1, 0] : 0,
+                  boxShadow: selectedPlan === 'pro' ? [
+                    "0 0 20px rgba(16,185,129,0.1)",
+                    "0 0 35px rgba(16,185,129,0.3)",
+                    "0 0 20px rgba(16,185,129,0.1)"
+                  ] : "none"
+                }}
+                transition={{ 
+                  duration: selectedPlan === 'pro' ? 6 : 5, 
+                  repeat: Infinity, 
+                  ease: "easeInOut" 
+                }}
+                whileHover={{ scale: 1.05, translateY: -8 }}
+                whileTap={{ 
+                  scale: 0.95, 
+                  x: [0, -6, 6, -6, 6, 0],
+                  rotate: [0, -2, 2, -2, 2, 0]
+                }}
+                className={cn(
+                  "rounded-xl p-6 flex flex-col relative overflow-hidden cursor-pointer group transition-all duration-500",
+                  selectedPlan === 'pro' 
+                    ? "bg-emerald-500/10 border border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.1)]" 
+                    : "bg-zinc-800/50 border border-white/5 hover:border-white/20"
+                )}
               >
-                Pro Plus
-              </motion.h3>
-              <p className="text-sm text-zinc-500 mt-1">Full Premium Access</p>
+                {selectedPlan === 'pro' && (
+                  <motion.div
+                    animate={{ x: ['-100%', '200%'] }}
+                    transition={{ duration: 3, repeat: Infinity, ease: "linear", repeatDelay: 1 }}
+                    className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent skew-x-12 pointer-events-none"
+                  />
+                )}
+                <div className="mb-4">
+                  <motion.h3 
+                    animate={selectedPlan === 'pro' ? { scale: [1, 1.05, 1] } : {}}
+                    transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                    className="text-2xl font-black mb-2"
+                  >
+                    Pro
+                  </motion.h3>
+                  <p className="text-sm text-zinc-400">The ultimate high-fidelity experience.</p>
+                </div>
+                <div className="mt-auto space-y-2">
+                  <div className="flex items-center gap-2 text-sm"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Ad-free playback</div>
+                  <div className="flex items-center gap-2 text-sm"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> 12 Playlist limit</div>
+                  <div className="flex items-center gap-2 text-sm"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Unlimited HD Sound</div>
+                  <div className="flex items-center gap-2 text-sm"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Full AI Features</div>
+                </div>
+              </motion.div>
             </div>
-            <ul className="text-sm space-y-3 mb-8 flex-1">
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> No Ads</li>
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> Unlimited downloads</li>
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> 10 Playlists</li>
-              <li className="flex items-center gap-2 text-zinc-300"><Plus size={14} /> Background play</li>
-            </ul>
-            <Link 
-              to="/settings"
-              className={cn(
-                "w-full py-3 font-bold rounded-lg transition-colors text-center",
-                selectedPlan === 'pro' ? "bg-netflix-red text-white hover:bg-red-700" : "bg-white text-black hover:bg-zinc-200"
-              )}
+
+            <button 
+              onClick={() => setShowRedeem(true)}
+              className="w-full mt-8 bg-white text-black py-4 rounded-xl font-bold hover:bg-zinc-200 transition-colors"
             >
-              Redeem Pro
-            </Link>
-          </motion.div>
-        </div>
+              Activate Subscription
+            </button>
+            <button 
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="w-full mt-2 text-zinc-400 hover:text-white text-sm flex items-center justify-center gap-2"
+            >
+              <RefreshCw size={14} className={cn(isRefreshing && "animate-spin")} />
+              {isRefreshing ? 'Refreshing Status...' : 'Already redeemed? Refresh'}
+            </button>
+          </>
+        ) : (
+          <div className="space-y-6">
+            <div className="bg-zinc-800/50 border border-white/5 rounded-xl p-6">
+              <h3 className="text-lg font-bold mb-2">Enter Redeem Code</h3>
+              <p className="text-sm text-zinc-400 mb-4">Enter your 12-character code to activate {selectedPlan.toUpperCase()} plan.</p>
+              <input 
+                autoFocus
+                type="text" 
+                value={redeemCode}
+                onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
+                placeholder="XXXX-XXXX-XXXX"
+                className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 focus:outline-none focus:border-netflix-red transition-colors font-mono text-center text-xl tracking-widest"
+              />
+            </div>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowRedeem(false)}
+                className="flex-1 py-4 bg-zinc-800 text-white font-bold rounded-xl hover:bg-zinc-700 transition-colors"
+              >
+                Back
+              </button>
+              <button 
+                onClick={handleRedeem}
+                disabled={isRedeeming}
+                className="flex-[2] py-4 bg-netflix-red text-white font-bold rounded-xl hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {isRedeeming ? 'Activating...' : 'Confirm Activation'}
+              </button>
+            </div>
+          </div>
+        )}
         
-        <button 
-          onClick={onLogout}
-          className="w-full mt-6 py-3 border border-white/10 text-white font-bold rounded-lg hover:bg-white/5 transition-colors text-sm flex items-center justify-center gap-2"
-        >
-          <LogOut size={16} />
-          Logout
-        </button>
-
-        <div className="flex justify-center mt-4">
-          <button 
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="text-[10px] text-zinc-500 hover:text-white flex items-center gap-1 transition-colors"
-          >
-            <RefreshCw size={10} className={cn(isRefreshing && "animate-spin")} />
-            {isRefreshing ? 'Checking...' : 'Already redeemed? Refresh status'}
-          </button>
-        </div>
-
-        <p className="text-[10px] text-zinc-600 text-center mt-2">
-          If your subscription isn't showing up, try logging out and back in.
-        </p>
+        <button onClick={onLogout} className="w-full mt-6 text-zinc-500 hover:text-white text-xs uppercase tracking-widest font-bold">Logout Account</button>
       </motion.div>
     </div>
   );
 };
 
+const MoveSongModal = ({ 
+  song, 
+  maxPos, 
+  onClose, 
+  onMove 
+}: { 
+  song: Song; 
+  maxPos: number; 
+  onClose: () => void; 
+  onMove: (pos: number) => void; 
+}) => {
+  const [pos, setPos] = useState('');
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm">
+        <h2 className="text-xl font-bold mb-4">Move Song</h2>
+        <p className="text-zinc-400 mb-4 text-sm">Move "{song.title}" to position (1-{maxPos}):</p>
+        <input 
+          type="number"
+          min="1"
+          max={maxPos}
+          value={pos}
+          onChange={(e) => setPos(e.target.value)}
+          className="w-full bg-zinc-800 border border-white/10 rounded-lg p-3 text-white mb-4"
+          placeholder="Enter position"
+        />
+        <div className="flex gap-2">
+          <button onClick={onClose} className="flex-1 bg-zinc-800 py-2 rounded-lg text-sm font-bold">Cancel</button>
+          <button onClick={() => {
+            const p = parseInt(pos);
+            if (p >= 1 && p <= maxPos) {
+              onMove(p);
+              onClose();
+            }
+          }} className="flex-1 bg-emerald-500 py-2 rounded-lg text-sm font-bold text-black">Move</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Pages ---
+
+const PROFILE_COLORS = [
+  '#E50914', '#1DB954', '#00A8E1', '#FF9900', '#7289DA', 
+  '#FF0000', '#0077B5', '#FF4500', '#1DA1F2', '#9146FF',
+  '#F472B6', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B'
+];
+
+const getRandomProfileColor = () => PROFILE_COLORS[Math.floor(Math.random() * PROFILE_COLORS.length)];
 
 const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
   const [email, setEmail] = useState('');
@@ -1101,24 +1325,23 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
         userData = {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
-          subscription: data.subscription || 'plus',
+          subscription: data.subscription || 'none',
           playlists: data.playlists || [],
           defaultVolume: data.defaultVolume ?? 0.5,
           aiBoostMode: data.aiBoostMode || 'manual',
           cleanAudio: data.cleanAudio ?? false,
-          profileColor: data.profileColor || `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`
+          profileColor: data.profileColor || getRandomProfileColor()
         };
       } else {
-        const randomColor = `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`;
         userData = {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
-          subscription: 'plus',
+          subscription: 'none',
           playlists: [],
           defaultVolume: 0.5,
           aiBoostMode: 'manual',
           cleanAudio: false,
-          profileColor: randomColor
+          profileColor: getRandomProfileColor()
         };
         await setDoc(userDocRef, {
           email: userData.email,
@@ -1147,8 +1370,9 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
     try {
       if (Capacitor.isNativePlatform()) {
         // Use Capacitor Browser for native platforms
-        const authUrl = `${window.location.origin}/api/auth/google`;
-        await Browser.open({ url: authUrl });
+        const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+        const authUrl = `${baseUrl}/api/auth/google`;
+        await Browser.open({ url: authUrl, windowName: '_self' });
       } else {
         // Web fallback
         const provider = new GoogleAuthProvider();
@@ -1179,24 +1403,23 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
       userData = {
         id: firebaseUser.uid,
         email: firebaseUser.email || '',
-        subscription: data.subscription || 'plus',
+        subscription: data.subscription || 'none',
         playlists: data.playlists || [],
         defaultVolume: data.defaultVolume ?? 0.5,
         aiBoostMode: data.aiBoostMode || 'manual',
         cleanAudio: data.cleanAudio ?? false,
-        profileColor: data.profileColor || `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`
+        profileColor: data.profileColor || getRandomProfileColor()
       };
     } else {
-      const randomColor = `#${Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')}`;
       userData = {
         id: firebaseUser.uid,
         email: firebaseUser.email || '',
-        subscription: 'plus',
+        subscription: 'none',
         playlists: [],
         defaultVolume: 0.5,
         aiBoostMode: 'manual',
         cleanAudio: false,
-        profileColor: randomColor
+        profileColor: getRandomProfileColor()
       };
       await setDoc(userDocRef, {
         email: userData.email,
@@ -1303,7 +1526,7 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
 
 const SearchPage = ({ songs, onPlay, user, onAddToPlaylist, onDeleteSong }: { 
   songs: Song[]; 
-  onPlay: (song: Song) => void; 
+  onPlay: (song: Song, playlist?: Song[]) => void; 
   user: User | null;
   onAddToPlaylist: (song: Song) => void;
   onDeleteSong: (id: string) => void;
@@ -1338,7 +1561,7 @@ const SearchPage = ({ songs, onPlay, user, onAddToPlaylist, onDeleteSong }: {
               key={song.id}
               className="flex items-center gap-4 bg-zinc-900/30 hover:bg-zinc-800/30 p-3 rounded-lg cursor-pointer transition-colors group"
             >
-              <div className="relative w-12 h-12 flex-shrink-0" onClick={() => onPlay(song)}>
+              <div className="relative w-12 h-12 flex-shrink-0" onClick={() => onPlay(song, filteredSongs)}>
                 <img 
                   src={song.thumbnail} 
                   alt={song.title} 
@@ -1349,34 +1572,11 @@ const SearchPage = ({ songs, onPlay, user, onAddToPlaylist, onDeleteSong }: {
                   <Play size={16} fill="white" className="text-white" />
                 </div>
               </div>
-              <div className="flex-1 min-w-0" onClick={() => onPlay(song)}>
-                <h3 className="font-bold text-sm truncate">{song.title}</h3>
+              <div className="flex-1 min-w-0" onClick={() => onPlay(song, filteredSongs)}>
+                <MarqueeText text={song.title} className="font-bold text-sm" />
                 <p className="text-xs text-zinc-500 truncate">{song.artist}</p>
               </div>
               <div className="flex items-center gap-1">
-                <button 
-                  onClick={() => onAddToPlaylist(song)}
-                  className="p-2 text-zinc-400 hover:text-white transition-colors"
-                  title="Add to Playlist"
-                >
-                  <Plus size={18} />
-                </button>
-                {user?.isAdmin && (
-                  <button 
-                    onClick={() => {
-                      const code = prompt("Enter security code to delete song (e.g. 1234):");
-                      if (code === "1234") {
-                        onDeleteSong(song.id);
-                      } else if (code !== null) {
-                        toast.error("Invalid security code");
-                      }
-                    }}
-                    className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
-                    title="Delete Song"
-                  >
-                    <MoreVertical size={18} />
-                  </button>
-                )}
               </div>
             </div>
           ))
@@ -1424,7 +1624,7 @@ const PlaylistModal = ({
           </button>
         </div>
 
-        <div className="p-6 max-h-[400px] overflow-y-auto space-y-2">
+        <div className="p-6 max-h-[400px] overflow-y-auto no-scrollbar space-y-2">
           {user.playlists.length === 0 ? (
             <div className="text-center py-8">
               <Library size={48} className="mx-auto text-zinc-700 mb-4" />
@@ -1489,7 +1689,7 @@ const PlaylistModal = ({
 };
 
 const HomePage = ({ onPlay, user, songs, loadingSongs, onAddToPlaylist, onDeleteSong }: { 
-  onPlay: (song: Song) => void; 
+  onPlay: (song: Song, playlist?: Song[]) => void; 
   user: User | null; 
   songs: Song[]; 
   loadingSongs: boolean;
@@ -1543,22 +1743,16 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onAddToPlaylist, onDelete
                   <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-60" />
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button 
-                      onClick={() => onPlay(song)}
+                      onClick={() => onPlay(song, songs.slice(0, 6))}
                       className="w-12 h-12 bg-netflix-red rounded-full flex items-center justify-center shadow-2xl hover:scale-110 transition-transform"
                     >
                       <Play size={24} fill="white" className="ml-1" />
-                    </button>
-                    <button 
-                      onClick={() => onAddToPlaylist(song)}
-                      className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center transition-transform hover:scale-110 shadow-xl"
-                    >
-                      <Plus size={20} />
                     </button>
                   </div>
                 </div>
                 <div className="mt-3">
                   <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-sm truncate flex-1">{song.title}</h3>
+                    <MarqueeText text={song.title} className="font-bold text-sm flex-1" />
                     {user?.downloads?.includes(song.id) && (
                       <WifiOff size={12} className="text-emerald-500 flex-shrink-0" title="Available offline" />
                     )}
@@ -1582,7 +1776,7 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onAddToPlaylist, onDelete
               key={song.id}
               className="flex items-center gap-4 bg-zinc-900/50 hover:bg-zinc-800/50 p-3 rounded-lg cursor-pointer transition-colors group"
             >
-              <div className="relative w-16 h-16 flex-shrink-0" onClick={() => onPlay(song)}>
+              <div className="relative w-16 h-16 flex-shrink-0" onClick={() => onPlay(song, songs.slice(0, 4))}>
                 <img 
                   src={song.thumbnail} 
                   alt={song.title} 
@@ -1593,9 +1787,9 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onAddToPlaylist, onDelete
                   <Play size={20} fill="white" className="text-white" />
                 </div>
               </div>
-              <div className="flex-1 min-w-0" onClick={() => onPlay(song)}>
+              <div className="flex-1 min-w-0" onClick={() => onPlay(song, songs.slice(0, 4))}>
                 <div className="flex items-center gap-2">
-                  <h3 className="font-bold truncate flex-1">{song.title}</h3>
+                  <MarqueeText text={song.title} className="font-bold flex-1" />
                   {user?.downloads?.includes(song.id) && (
                     <WifiOff size={12} className="text-emerald-500 flex-shrink-0" title="Available offline" />
                   )}
@@ -1610,22 +1804,6 @@ const HomePage = ({ onPlay, user, songs, loadingSongs, onAddToPlaylist, onDelete
                 >
                   <Plus size={20} />
                 </button>
-                {user?.isAdmin && (
-                  <button 
-                    onClick={() => {
-                      const code = prompt("Enter security code to delete song (e.g. 1234):");
-                      if (code === "1234") {
-                        onDeleteSong(song.id);
-                      } else if (code !== null) {
-                        toast.error("Invalid security code");
-                      }
-                    }}
-                    className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
-                    title="Delete Song"
-                  >
-                    <MoreVertical size={20} />
-                  </button>
-                )}
               </div>
             </div>
           ))}
@@ -1643,16 +1821,20 @@ const LibraryPage = ({
   onRefresh,
   onRefreshUser,
   onDeleteSong,
-  onDeletePlaylist
+  onDeletePlaylist,
+  currentSong,
+  onStop
 }: { 
   user: User | null; 
-  onPlay: (song: Song) => void;
+  onPlay: (song: Song, playlist?: Song[]) => void;
   onCreatePlaylist: (name: string) => void;
   onUpdatePlaylist: (playlistId: string, songs: Song[]) => void;
   onRefresh: () => void;
   onRefreshUser: () => void;
   onDeleteSong: (id: string) => void;
   onDeletePlaylist: (id: string) => void;
+  currentSong: Song | null;
+  onStop: () => void;
 }) => {
   const isPro = user?.subscription === 'pro';
   const limit = isPro ? 10 : 2;
@@ -1660,6 +1842,18 @@ const LibraryPage = ({
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [viewingPlaylist, setViewingPlaylist] = useState<Playlist | null>(null);
+  const [openMenuIndex, setOpenMenuIndex] = useState<number | null>(null);
+  const [moveSongData, setMoveSongData] = useState<{song: Song, index: number} | null>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (openMenuIndex !== null) {
+        setOpenMenuIndex(null);
+      }
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [openMenuIndex]);
 
   const handleCreate = () => {
     if (newPlaylistName.trim()) {
@@ -1678,32 +1872,38 @@ const LibraryPage = ({
 
   const handleMoveSong = (playlistId: string, songIndex: number) => {
     if (!viewingPlaylist) return;
-    const targetPos = prompt(`Move song to position (1-${viewingPlaylist.songs.length}):`, (songIndex + 1).toString());
-    if (targetPos === null) return;
-    
-    const newIndex = parseInt(targetPos) - 1;
-    if (isNaN(newIndex) || newIndex < 0 || newIndex >= viewingPlaylist.songs.length) {
-      toast.error("Invalid position");
-      return;
-    }
+    setMoveSongData({ song: viewingPlaylist.songs[songIndex], index: songIndex });
+  };
 
+  const performMove = (newIndex: number) => {
+    if (!viewingPlaylist || !moveSongData) return;
     const newSongs = [...viewingPlaylist.songs];
-    const [movedSong] = newSongs.splice(songIndex, 1);
-    newSongs.splice(newIndex, 0, movedSong);
-    
-    onUpdatePlaylist(playlistId, newSongs);
+    const [removed] = newSongs.splice(moveSongData.index, 1);
+    newSongs.splice(newIndex - 1, 0, removed);
+    onUpdatePlaylist(viewingPlaylist.id, newSongs);
     setViewingPlaylist({ ...viewingPlaylist, songs: newSongs });
+    setMoveSongData(null);
     toast.success("Position updated");
   };
 
   const handleRemoveFromPlaylist = (playlistId: string, songIndex: number) => {
     if (!viewingPlaylist) return;
+    const songToDelete = viewingPlaylist.songs[songIndex];
     const newSongs = [...viewingPlaylist.songs];
     newSongs.splice(songIndex, 1);
     
     onUpdatePlaylist(playlistId, newSongs);
     setViewingPlaylist({ ...viewingPlaylist, songs: newSongs });
     toast.success("Song deleted from playlist");
+
+    if (currentSong?.id === songToDelete.id) {
+      if (newSongs.length > 0) {
+        const nextIndex = songIndex < newSongs.length ? songIndex : 0;
+        onPlay(newSongs[nextIndex], newSongs);
+      } else {
+        onStop();
+      }
+    }
   };
 
   if (viewingPlaylist) {
@@ -1720,10 +1920,8 @@ const LibraryPage = ({
           
           <button 
             onClick={() => {
-              if (window.confirm("Are you sure you want to delete this playlist?")) {
-                onDeletePlaylist(viewingPlaylist.id);
-                setViewingPlaylist(null);
-              }
+              onDeletePlaylist(viewingPlaylist.id);
+              setViewingPlaylist(null);
             }}
             className="flex items-center gap-2 text-zinc-500 hover:text-netflix-red transition-colors text-xs font-bold uppercase tracking-widest"
           >
@@ -1739,7 +1937,16 @@ const LibraryPage = ({
           <div>
             <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Playlist</p>
             <h1 className="text-5xl md:text-7xl font-black tracking-tighter mb-4">{viewingPlaylist.name}</h1>
-            <p className="text-sm text-zinc-400 font-medium">{viewingPlaylist.songs.length} songs • Created by you</p>
+            <p className="text-sm text-zinc-400 font-medium mb-6">{viewingPlaylist.songs.length} songs • Created by you</p>
+            {viewingPlaylist.songs.length > 0 && (
+              <button 
+                onClick={() => onPlay(viewingPlaylist.songs[0], viewingPlaylist.songs)}
+                className="flex items-center gap-2 bg-netflix-red text-white px-6 py-3 rounded-full font-bold hover:scale-105 transition-transform"
+              >
+                <Play size={20} fill="currentColor" />
+                Play All
+              </button>
+            )}
           </div>
         </div>
 
@@ -1760,15 +1967,15 @@ const LibraryPage = ({
                 <div className="w-10 h-10 rounded bg-zinc-800 flex-shrink-0 overflow-hidden relative">
                   <img src={song.thumbnail} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                   <button 
-                    onClick={() => onPlay(song)}
+                    onClick={() => onPlay(song, viewingPlaylist.songs)}
                     className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                   >
                     <Play size={16} fill="white" />
                   </button>
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <p className="font-bold text-sm truncate group-hover:text-netflix-red transition-colors flex-1">{song.title}</p>
+                    <MarqueeText text={song.title} className="font-bold text-sm flex-1" />
                     {user?.downloads?.includes(song.id) && (
                       <WifiOff size={12} className="text-emerald-500 flex-shrink-0" title="Available offline" />
                     )}
@@ -1776,29 +1983,44 @@ const LibraryPage = ({
                   <p className="text-xs text-zinc-500 truncate">{song.artist}</p>
                 </div>
               </div>
-              <div className="relative group/menu">
+              <div className="relative">
                 <button 
                   className="p-2 text-zinc-500 hover:text-white transition-colors"
                   title="More Options"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpenMenuIndex(openMenuIndex === index ? null : index);
+                  }}
                 >
                   <MoreVertical size={20} />
                 </button>
-                <div className="absolute right-0 top-full mt-1 w-48 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all">
+                {openMenuIndex === index && (
+                  <div 
+                    className="absolute right-0 top-full mt-1 w-48 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                   <button 
-                    onClick={() => handleMoveSong(viewingPlaylist.id, index)}
+                    onClick={() => {
+                      handleMoveSong(viewingPlaylist.id, index);
+                      setOpenMenuIndex(null);
+                    }}
                     className="w-full flex items-center gap-3 px-4 py-3 text-xs font-bold text-white hover:bg-white/5 transition-colors"
                   >
                     <ArrowUpCircle size={14} />
                     Move Position
                   </button>
                   <button 
-                    onClick={() => handleRemoveFromPlaylist(viewingPlaylist.id, index)}
+                    onClick={() => {
+                      handleRemoveFromPlaylist(viewingPlaylist.id, index);
+                      setOpenMenuIndex(null);
+                    }}
                     className="w-full flex items-center gap-3 px-4 py-3 text-xs font-bold text-white hover:bg-white/5 transition-colors border-t border-white/5"
                   >
                     <Trash2 size={14} />
                     Delete Song
                   </button>
                 </div>
+                )}
               </div>
             </div>
           ))}
@@ -1807,6 +2029,15 @@ const LibraryPage = ({
             <div className="text-center py-20 text-zinc-500 italic">
               This playlist is empty. Add some music!
             </div>
+          )}
+
+          {moveSongData && (
+            <MoveSongModal 
+              song={moveSongData.song}
+              maxPos={viewingPlaylist.songs.length}
+              onClose={() => setMoveSongData(null)}
+              onMove={performMove}
+            />
           )}
         </div>
       </div>
@@ -1876,9 +2107,7 @@ const LibraryPage = ({
                 <div className="flex items-center gap-2">
                   <button 
                     onClick={() => {
-                      if (window.confirm(`Are you sure you want to delete "${playlist.name}"?`)) {
-                        onDeletePlaylist(playlist.id);
-                      }
+                      onDeletePlaylist(playlist.id);
                     }}
                     className="w-10 h-10 bg-white/5 text-zinc-500 hover:text-netflix-red hover:bg-netflix-red/10 rounded-full flex items-center justify-center transition-all"
                     title="Delete Playlist"
@@ -1899,13 +2128,13 @@ const LibraryPage = ({
                     <div 
                       key={song.id} 
                       className="flex items-center gap-3 group cursor-pointer"
-                      onClick={() => onPlay(song)}
+                      onClick={() => onPlay(song, playlist.songs)}
                     >
                       <div className="w-8 h-8 rounded bg-zinc-800 flex-shrink-0 overflow-hidden">
                         <img src={song.thumbnail} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate group-hover:text-netflix-red transition-colors">{song.title}</p>
+                        <MarqueeText text={song.title} className="text-sm font-medium group-hover:text-netflix-red transition-colors" />
                         <p className="text-[10px] text-zinc-500 truncate">{song.artist}</p>
                       </div>
                       <Play size={14} className="text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -1944,7 +2173,7 @@ const LibraryPage = ({
 
 const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAddToPlaylist, onDeleteSong }: { 
   user: User | null; 
-  onPlay: (song: Song) => void; 
+  onPlay: (song: Song, playlist?: Song[]) => void; 
   songs: Song[];
   onDownload: (song: Song) => void;
   onRemoveDownload: (songId: string) => void;
@@ -1988,13 +2217,13 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAd
                     className="w-16 h-16 rounded object-cover"
                     referrerPolicy="no-referrer"
                   />
-                  <div className="flex-1">
-                    <h3 className="font-bold">{song.title}</h3>
+                  <div className="flex-1 min-w-0">
+                    <MarqueeText text={song.title} className="font-bold" />
                     <p className="text-sm text-zinc-500">{song.artist}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button 
-                      onClick={() => onPlay(song)}
+                      onClick={() => onPlay(song, downloadedSongs)}
                       className="p-2 text-zinc-400 hover:text-white"
                     >
                       <Play size={20} fill="currentColor" />
@@ -2006,27 +2235,15 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAd
                     >
                       <Trash2 size={18} />
                     </button>
-                    <button 
-                      onClick={() => onAddToPlaylist(song)}
-                      className="p-2 text-zinc-400 hover:text-white"
-                      title="Add to Playlist"
-                    >
-                      <Plus size={20} />
-                    </button>
                     {user?.isAdmin && (
                       <button 
                         onClick={() => {
-                          const code = prompt("Enter security code to delete song (e.g. 1234):");
-                          if (code === "1234") {
-                            onDeleteSong(song.id);
-                          } else if (code !== null) {
-                            toast.error("Invalid security code");
-                          }
+                          onDeleteSong(song.id);
                         }}
                         className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
                         title="Delete Song"
                       >
-                        <MoreVertical size={20} />
+                        <Trash2 size={20} />
                       </button>
                     )}
                   </div>
@@ -2048,13 +2265,13 @@ const DownloadsPage = ({ user, onPlay, songs, onDownload, onRemoveDownload, onAd
                   className="w-16 h-16 rounded object-cover"
                   referrerPolicy="no-referrer"
                 />
-                <div className="flex-1">
-                  <h3 className="font-bold">{song.title}</h3>
+                <div className="flex-1 min-w-0">
+                  <MarqueeText text={song.title} className="font-bold" />
                   <p className="text-sm text-zinc-500">{song.artist}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button 
-                    onClick={() => onPlay(song)}
+                    onClick={() => onPlay(song, songs.slice(0, 6))}
                     className="p-2 text-zinc-400 hover:text-white"
                   >
                     <Play size={20} fill="currentColor" />
@@ -2091,12 +2308,38 @@ const SettingsPage = ({
   const [redeemCode, setRedeemCode] = useState('');
   const [isRedeeming, setIsRedeeming] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  const [confirmRedeem, setConfirmRedeem] = useState<{ planType: SubscriptionType; newEndsAt: number; codeDocId: string } | null>(null);
+  
+  const paletteColors = [
+    '#E50914', '#1DB954', '#00A8E1', '#FF9900', '#7289DA', 
+    '#FF0000', '#0077B5', '#FF4500', '#1DA1F2', '#9146FF'
+  ];
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await onRefresh();
     setIsRefreshing(false);
-    toast.success('Subscription status updated!');
+  };
+
+  const executeRedeem = async (planType: SubscriptionType, newEndsAt: number, codeDocId: string) => {
+    setIsRedeeming(true);
+    try {
+      await updateDoc(doc(db, 'redeem_codes', codeDocId), {
+        used: true,
+        usedBy: user?.id,
+        usedAt: serverTimestamp()
+      });
+
+      onUpdateSub(planType, newEndsAt);
+      setRedeemCode('');
+      toast.success('Subscription activated!');
+      setConfirmRedeem(null);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to redeem code');
+    } finally {
+      setIsRedeeming(false);
+    }
   };
 
   const handleRedeem = async () => {
@@ -2117,6 +2360,18 @@ const SettingsPage = ({
       
       const planType = (codeData.value as SubscriptionType) || 'plus';
       const daysToAdd = codeData.days || 30;
+
+      // Plan checks
+      const isProActive = user.subscription === 'pro' && typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now();
+      const isPlusActive = user.subscription === 'plus' && typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now();
+
+      if (isProActive && planType === 'plus') {
+        throw new Error("This code cannot be added now because a Pro plan is currently running.");
+      }
+      
+      if (isPlusActive && planType === 'pro') {
+        throw new Error("This code cannot be added now because a Plus plan is currently running. Only Plus codes can extend your current plan.");
+      }
       
       const currentEndsAt = typeof user.subscriptionEndsAt === 'number' && user.subscriptionEndsAt > Date.now() 
         ? user.subscriptionEndsAt 
@@ -2130,18 +2385,9 @@ const SettingsPage = ({
         newEndsAt = Date.now() + (Number(daysToAdd) * 24 * 60 * 60 * 1000);
       }
 
-      await updateDoc(doc(db, 'redeem_codes', codeDoc.id), {
-        used: true,
-        usedBy: user.id,
-        usedAt: serverTimestamp()
-      });
-
-      onUpdateSub(planType, newEndsAt);
-      setRedeemCode('');
-      toast.success(`Successfully redeemed ${daysToAdd} days of ${planType.toUpperCase()}!`);
+      await executeRedeem(planType, newEndsAt, codeDoc.id);
     } catch (error: any) {
       toast.error(error.message || 'Failed to redeem code');
-    } finally {
       setIsRedeeming(false);
     }
   };
@@ -2159,13 +2405,74 @@ const SettingsPage = ({
         <section>
           <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4">Account Profile</h2>
           <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+            {confirmRedeem ? (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-6 mb-4">
+                <div className="flex items-center gap-3 text-amber-500 mb-4">
+                  <AlertTriangle size={24} />
+                  <h3 className="font-bold">Plan Upgrade Confirmation</h3>
+                </div>
+                <p className="text-sm text-zinc-300 mb-6">
+                  Plus subscription is active. Adding Pro code will replace Plus, and remaining days will be lost.
+                </p>
+                <div className="flex gap-4">
+                  <button 
+                    onClick={() => executeRedeem(confirmRedeem.planType, confirmRedeem.newEndsAt, confirmRedeem.codeDocId)}
+                    disabled={isRedeeming}
+                    className="flex-1 bg-amber-500 hover:bg-amber-600 text-black font-bold py-3 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {isRedeeming ? 'Processing...' : 'Confirm & Replace'}
+                  </button>
+                  <button 
+                    onClick={() => setConfirmRedeem(null)}
+                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-bold py-3 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
               <div className="flex items-center gap-4">
-                <div 
-                  className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold shadow-xl border-2 border-white/10"
-                  style={{ backgroundColor: user?.profileColor || '#E50914' }}
-                >
-                  {user?.email[0].toUpperCase()}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowPalette(!showPalette)}
+                    className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold shadow-xl border-2 border-white/10 transition-transform hover:scale-105 active:scale-95 overflow-hidden group"
+                    style={{ backgroundColor: user?.profileColor || '#E50914' }}
+                  >
+                    <span className="group-hover:opacity-0 transition-opacity">
+                      {user?.email[0].toUpperCase()}
+                    </span>
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <Palette size={24} className="text-white" />
+                    </div>
+                  </button>
+                  
+                  <AnimatePresence>
+                    {showPalette && (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                        className="absolute top-full left-0 mt-4 p-3 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl z-50 grid grid-cols-5 gap-2 w-48"
+                      >
+                        {paletteColors.map(color => (
+                          <button
+                            key={color}
+                            onClick={() => {
+                              onUpdateSettings({ profileColor: color });
+                              setShowPalette(false);
+                            }}
+                            className={cn(
+                              "w-7 h-7 rounded-full border border-white/10 transition-transform hover:scale-110",
+                              user?.profileColor === color && "ring-2 ring-blue-500 ring-offset-2 ring-offset-zinc-900"
+                            )}
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
                 <div>
                   <h3 className="font-bold text-xl truncate max-w-[200px] md:max-w-none">{user?.email}</h3>
@@ -2215,27 +2522,43 @@ const SettingsPage = ({
                 </div>
               )}
             </div>
-          </div>
-        </section>
+          </>
+        )}
+      </div>
+    </section>
 
         <section>
           <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4">Audio Preferences</h2>
           <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6 space-y-8">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-4 bg-white/5 rounded-xl border border-white/5">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <Volume2 size={18} className="text-netflix-red" />
-                  <h3 className="font-bold">Master Default Volume</h3>
+            <div className="flex flex-col items-center gap-8 p-8 bg-white/5 rounded-2xl border border-white/5">
+              <div className="text-center">
+                <div className="flex items-center justify-center gap-2 mb-2">
+                  <Volume2 size={24} className="text-netflix-red" />
+                  <h3 className="text-xl font-bold">Master Default Volume</h3>
                 </div>
-                <p className="text-sm text-zinc-500">Set your preferred starting volume for all tracks (up to 250%)</p>
+                <p className="text-sm text-zinc-500">Set your preferred starting volume for all tracks</p>
               </div>
-              <div className="flex items-center gap-6 bg-black/40 p-4 rounded-xl border border-white/5 min-w-[300px]">
-                <div className="flex-1 flex flex-col gap-2">
-                  <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                    <span>0%</span>
-                    <span>100%</span>
-                    <span>250%</span>
+
+              {/* The Box in the Middle */}
+              <div className="flex flex-col items-center justify-center bg-zinc-900 w-24 h-24 rounded-2xl border-2 border-netflix-red shadow-[0_0_30px_rgba(229,9,20,0.2)]">
+                <span className="text-4xl font-black text-white leading-none">
+                  {Math.round((user?.defaultVolume || 0.5) * 100)}
+                </span>
+                <span className="text-[10px] font-bold text-zinc-500 uppercase mt-2 tracking-widest">Percent</span>
+              </div>
+
+              <div className="w-full max-w-xl space-y-4">
+                <div className="relative h-12 flex items-center group">
+                  {/* Custom Track */}
+                  <div className="absolute inset-0 flex items-center pointer-events-none">
+                    <div className="w-full h-3 bg-zinc-800 rounded-full overflow-hidden border border-white/5">
+                      <div 
+                        className="h-full bg-netflix-red"
+                        style={{ width: `${((user?.defaultVolume || 0.5) / 2.5) * 100}%` }}
+                      />
+                    </div>
                   </div>
+                  
                   <input 
                     type="range" 
                     min="0" 
@@ -2243,33 +2566,56 @@ const SettingsPage = ({
                     step="0.01" 
                     value={user?.defaultVolume || 0.5}
                     onChange={(e) => onUpdateSettings({ defaultVolume: parseFloat(e.target.value) })}
-                    className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-netflix-red"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  />
+                  
+                  {/* Custom Thumb - No transition to ensure "jumping" feel */}
+                  <div 
+                    className="absolute top-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full border-4 border-netflix-red shadow-2xl pointer-events-none"
+                    style={{ 
+                      left: `calc(${((user?.defaultVolume || 0.5) / 2.5) * 100}% - 16px)`,
+                      transition: 'none' 
+                    }}
                   />
                 </div>
-                <div className="flex flex-col items-center justify-center bg-zinc-900 w-16 h-12 rounded-lg border border-white/10">
-                  <span className="text-lg font-black text-white leading-none">
-                    {Math.round((user?.defaultVolume || 0.5) * 100)}
-                  </span>
-                  <span className="text-[8px] font-bold text-zinc-500 uppercase mt-1">%</span>
+                
+                <div className="flex justify-between text-[10px] font-black text-zinc-500 uppercase tracking-widest px-2">
+                  <span>0%</span>
+                  <span className="text-netflix-red">100% (Standard)</span>
+                  <span>250% (Max Boost)</span>
                 </div>
               </div>
             </div>
 
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h3 className="font-bold">AI Sound Boost</h3>
-                <p className="text-sm text-zinc-500">Choose how AI Boost should behave</p>
+              <div className="flex items-center gap-3">
+                <div>
+                  <h3 className="font-bold">AI Sound Boost</h3>
+                  <p className="text-sm text-zinc-500">Choose how AI Boost should behave</p>
+                </div>
+                {user?.subscription === 'plus' && (
+                  <span className="bg-blue-600/20 text-blue-400 text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-widest border border-blue-600/30">Pro Feature</span>
+                )}
               </div>
-              <div className="flex bg-black p-1 rounded-lg border border-white/5">
+              <div className="flex bg-black p-1 rounded-lg border border-white/5 relative">
                 {(['off', 'always', 'manual'] as const).map((mode) => (
                   <button
                     key={mode}
+                    disabled={user?.subscription === 'plus'}
                     onClick={() => onUpdateSettings({ aiBoostMode: mode })}
                     className={cn(
-                      "px-4 py-1.5 rounded-md text-xs font-bold transition-all uppercase tracking-widest",
-                      user?.aiBoostMode === mode ? "bg-blue-600 text-white shadow-lg" : "text-zinc-500 hover:text-zinc-300"
+                      "relative px-4 py-1.5 rounded-md text-xs font-bold transition-all uppercase tracking-widest z-10",
+                      user?.aiBoostMode === mode ? "text-white" : "text-zinc-500 hover:text-zinc-300",
+                      user?.subscription === 'plus' && "opacity-20 cursor-not-allowed"
                     )}
                   >
+                    {user?.aiBoostMode === mode && (
+                      <motion.div 
+                        layoutId="activeMode"
+                        className="absolute inset-0 bg-blue-600 rounded-md shadow-[0_0_15px_rgba(37,99,235,0.4)] -z-10"
+                        transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                      />
+                    )}
                     {mode}
                   </button>
                 ))}
@@ -2277,22 +2623,37 @@ const SettingsPage = ({
             </div>
 
             <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 className="font-bold">Clean Audio</h3>
-                <p className="text-sm text-zinc-500">Enable AI-powered noise reduction and clarity</p>
-              </div>
-              <button
-                onClick={() => onUpdateSettings({ cleanAudio: !user?.cleanAudio })}
-                className={cn(
-                  "w-12 h-6 rounded-full transition-all relative",
-                  user?.cleanAudio ? "bg-emerald-500" : "bg-zinc-800"
+              <div className="flex items-center gap-3">
+                <div>
+                  <h3 className="font-bold">Clean Audio</h3>
+                  <p className="text-sm text-zinc-500">Enable AI-powered noise reduction and clarity</p>
+                </div>
+                {user?.subscription === 'plus' && (
+                  <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-widest border border-emerald-500/30">Pro Feature</span>
                 )}
-              >
-                <div className={cn(
-                  "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
-                  user?.cleanAudio ? "left-7" : "left-1"
-                )} />
-              </button>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={cn(
+                  "text-[10px] font-bold uppercase tracking-widest transition-colors",
+                  user?.cleanAudio ? "text-emerald-500" : "text-zinc-500"
+                )}>
+                  {user?.cleanAudio ? 'status switch on' : 'status switch off'}
+                </span>
+                <button
+                  disabled={user?.subscription === 'plus'}
+                  onClick={() => onUpdateSettings({ cleanAudio: !user?.cleanAudio })}
+                  className={cn(
+                    "w-12 h-6 rounded-full transition-all relative",
+                    user?.cleanAudio ? "bg-emerald-500" : "bg-zinc-800",
+                    user?.subscription === 'plus' && "opacity-20 cursor-not-allowed"
+                  )}
+                >
+                  <div className={cn(
+                    "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
+                    user?.cleanAudio ? "left-7" : "left-1"
+                  )} />
+                </button>
+              </div>
             </div>
           </div>
         </section>
@@ -2300,29 +2661,31 @@ const SettingsPage = ({
         <section>
           <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4">Redeem Subscription</h2>
           <div className="bg-zinc-900/30 border border-white/5 rounded-2xl p-6">
-            <p className="text-sm text-zinc-400 mb-6">Enter your redeem code to activate or extend your subscription.</p>
-            <div className="flex gap-4">
-              <input 
-                type="text" 
-                value={redeemCode}
-                onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
-                placeholder="XXXX-XXXX-XXXX"
-                className="flex-1 bg-black border border-white/10 rounded-lg px-4 py-3 focus:outline-none focus:border-netflix-red transition-colors font-mono"
-              />
-              <button 
-                onClick={handleRedeem}
-                disabled={isRedeeming}
-                className="bg-white text-black px-8 py-3 rounded-lg font-bold hover:bg-zinc-200 transition-colors disabled:opacity-50"
-              >
-                {isRedeeming ? 'Verifying...' : 'Redeem'}
-              </button>
-            </div>
+            <>
+              <p className="text-sm text-zinc-400 mb-6">Enter your redeem code to activate or extend your subscription.</p>
+              <div className="flex flex-col md:flex-row gap-4 items-center">
+                <input 
+                  type="text" 
+                  value={redeemCode}
+                  onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
+                  placeholder="XXXX-XXXX-XXXX"
+                  className="w-full md:flex-1 bg-black border border-white/10 rounded-lg px-4 py-3 focus:outline-none focus:border-netflix-red transition-colors font-mono"
+                />
+                <button 
+                  onClick={handleRedeem}
+                  disabled={isRedeeming}
+                  className="w-full md:w-auto bg-white text-black px-8 py-3 rounded-lg font-bold hover:bg-zinc-200 transition-colors disabled:opacity-50"
+                >
+                  {isRedeeming ? 'Verifying...' : 'Redeem'}
+                </button>
+              </div>
+            </>
           </div>
         </section>
 
         <div className="pt-10 border-t border-white/5 text-center">
           <p className="text-[10px] text-zinc-600 uppercase tracking-[0.2em] font-bold">
-            it made by xrokz organisation
+            it made by xrok organisation
           </p>
         </div>
       </div>
@@ -2348,8 +2711,70 @@ const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User |
   const [songThumbnail, setSongThumbnail] = useState<File | null>(null);
   const [songDetails, setSongDetails] = useState({ title: '', artist: '' });
   const [isUploading, setIsUploading] = useState(false);
+  const [isParsing, setIsParsing] = useState(false);
   const [editingSongId, setEditingSongId] = useState<string | null>(null);
-  const [songToDelete, setSongToDelete] = useState<string | null>(null);
+
+  const handleParseMetadata = async (url?: string) => {
+    const targetUrl = url || songUrl;
+    if (!targetUrl) return;
+    
+    setIsParsing(true);
+    try {
+      let finalSongUrl = targetUrl;
+      
+      // Google Drive conversion
+      if (targetUrl.includes('drive.google.com') || targetUrl.includes('docs.google.com')) {
+        const driveIdMatch = targetUrl.match(/\/d\/([^/]+)/) || targetUrl.match(/id=([^&]+)/);
+        if (driveIdMatch && driveIdMatch[1]) {
+          finalSongUrl = `https://docs.google.com/uc?export=download&id=${driveIdMatch[1]}`;
+        }
+      }
+
+      // Fetch the metadata
+      const metadata = await mm.fetchFromUrl(finalSongUrl);
+      
+      if (metadata.common) {
+        const { title, artist, picture } = metadata.common;
+        
+        if (title) setSongDetails(prev => ({ ...prev, title }));
+        if (artist) setSongDetails(prev => ({ ...prev, artist }));
+        
+        if (picture && picture.length > 0) {
+          const pic = picture[0];
+          const blob = new Blob([pic.data], { type: pic.format });
+          
+          // Upload the extracted cover to Firebase Storage
+          const coverRef = ref(storage, `thumbnails/extracted_${Date.now()}_cover`);
+          await uploadBytes(coverRef, blob);
+          const downloadUrl = await getDownloadURL(coverRef);
+          setThumbUrl(downloadUrl);
+          toast.success("Metadata and cover art parsed!");
+        } else {
+          toast.success("Metadata parsed (no cover art found)");
+        }
+      }
+    } catch (error: any) {
+      console.error("Metadata parsing error:", error);
+      // Don't show toast for automatic parsing to avoid annoyance if it fails due to CORS
+      if (!url) toast.error("Could not parse metadata. This is often due to CORS restrictions on the file host.");
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  // Auto-parse on URL change
+  useEffect(() => {
+    if (!songUrl || editingSongId) return;
+    
+    const timer = setTimeout(() => {
+      // Only auto-parse if fields are empty
+      if (!songDetails.title && !songDetails.artist) {
+        handleParseMetadata(songUrl);
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [songUrl, editingSongId]);
 
   useEffect(() => {
     if (!user?.isAdmin) return;
@@ -2450,10 +2875,7 @@ const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User |
   };
 
   const handleDeleteSong = async (id: string) => {
-    if (confirm("Are you sure you want to delete this song permanently?")) {
-      onDeleteSong(id);
-      setSongToDelete(null);
-    }
+    onDeleteSong(id);
   };
 
   const handleEditSong = (song: Song) => {
@@ -2625,23 +3047,35 @@ const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User |
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-[10px] font-bold text-zinc-500 uppercase block">Song URL (MP3 or Google Drive)</label>
-                  {songUrl && (
-                    <button 
-                      onClick={() => {
-                        let testUrl = songUrl;
-                        if (songUrl.includes('drive.google.com') || songUrl.includes('docs.google.com')) {
-                          const driveIdMatch = songUrl.match(/\/d\/([^/]+)/) || songUrl.match(/id=([^&]+)/);
-                          if (driveIdMatch && driveIdMatch[1]) {
-                            testUrl = `https://docs.google.com/uc?export=download&id=${driveIdMatch[1]}`;
+                  <div className="flex gap-2">
+                    {songUrl && (
+                      <button 
+                        onClick={() => handleParseMetadata()}
+                        disabled={isParsing}
+                        className="text-[10px] text-emerald-500 hover:underline font-bold flex items-center gap-1"
+                      >
+                        {isParsing ? <RefreshCw size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                        Auto-Parse
+                      </button>
+                    )}
+                    {songUrl && (
+                      <button 
+                        onClick={() => {
+                          let testUrl = songUrl;
+                          if (songUrl.includes('drive.google.com') || songUrl.includes('docs.google.com')) {
+                            const driveIdMatch = songUrl.match(/\/d\/([^/]+)/) || songUrl.match(/id=([^&]+)/);
+                            if (driveIdMatch && driveIdMatch[1]) {
+                              testUrl = `https://docs.google.com/uc?export=download&id=${driveIdMatch[1]}`;
+                            }
                           }
-                        }
-                        window.open(testUrl, '_blank');
-                      }}
-                      className="text-[10px] text-netflix-red hover:underline font-bold"
-                    >
-                      Test Link
-                    </button>
-                  )}
+                          window.open(testUrl, '_blank');
+                        }}
+                        className="text-[10px] text-netflix-red hover:underline font-bold"
+                      >
+                        Test Link
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <input 
                   type="text" 
@@ -2845,6 +3279,16 @@ const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User |
                           >
                             +Days
                           </button>
+                          <button 
+                            onClick={() => handleUpdateUserStatus(u.id, { 
+                              subscriptionEndsAt: Date.now() + (30 * 24 * 60 * 60 * 1000),
+                              subscription: u.subscription === 'none' ? 'pro' : u.subscription
+                            })}
+                            className="ml-2 px-2 py-1 bg-emerald-500/20 text-emerald-500 rounded text-[10px] font-bold uppercase hover:bg-emerald-500/30 transition-colors"
+                            title="Set to expire in 30 days"
+                          >
+                            30d
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -2864,7 +3308,7 @@ const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User |
                     <img src={song.thumbnail} className="w-12 h-12 rounded object-cover" referrerPolicy="no-referrer" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <h3 className="font-bold text-sm truncate">{song.title}</h3>
+                        <MarqueeText text={song.title} className="font-bold text-sm" />
                         {isMock ? (
                           <span className="text-[8px] bg-zinc-800 text-zinc-500 px-1 rounded uppercase font-bold">System</span>
                         ) : (
@@ -2876,39 +3320,20 @@ const AdminPage = ({ user, songs, onRefreshSongs, onDeleteSong }: { user: User |
                     <div className="flex items-center gap-2">
                       {!isMock && (
                         <>
-                          {songToDelete === song.id ? (
-                            <div className="flex items-center gap-1">
-                              <button 
-                                onClick={() => handleDeleteSong(song.id)}
-                                className="px-2 py-1 bg-netflix-red text-white text-[10px] font-bold rounded"
-                              >
-                                Confirm
-                              </button>
-                              <button 
-                                onClick={() => setSongToDelete(null)}
-                                className="px-2 py-1 bg-zinc-800 text-zinc-400 text-[10px] font-bold rounded"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <button 
-                                onClick={() => handleEditSong(song)}
-                                className="p-2 text-zinc-500 hover:text-white transition-colors"
-                                title="Edit Song"
-                              >
-                                <Edit2 size={18} />
-                              </button>
-                              <button 
-                                onClick={() => setSongToDelete(song.id)}
-                                className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
-                                title="Delete Song"
-                              >
-                                <Trash2 size={18} />
-                              </button>
-                            </>
-                          )}
+                          <button 
+                            onClick={() => handleEditSong(song)}
+                            className="p-2 text-zinc-500 hover:text-white transition-colors"
+                            title="Edit Song"
+                          >
+                            <Edit2 size={18} />
+                          </button>
+                          <button 
+                            onClick={() => handleDeleteSong(song.id)}
+                            className="p-2 text-zinc-500 hover:text-netflix-red transition-colors"
+                            title="Delete Song"
+                          >
+                            <Trash2 size={18} />
+                          </button>
                         </>
                       )}
                     </div>
@@ -2936,6 +3361,7 @@ export default function App() {
     return savedUser ? JSON.parse(savedUser) : null;
   });
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
+  const [currentPlaylist, setCurrentPlaylist] = useState<Song[] | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
   const [initializing, setInitializing] = useState(true);
@@ -2946,26 +3372,45 @@ export default function App() {
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const location = useLocation();
 
+  // Sync user to localStorage whenever it changes
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem('sonik_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('sonik_user');
+    }
+  }, [user]);
+
   // Handle deep links for Google Sign-in
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
 
     const handleDeepLink = async (url: string) => {
+      console.log('Handling deep link:', url);
       if (url.includes('sonik://auth-success')) {
-        const urlObj = new URL(url.replace('sonik://', 'http://sonik/')); // URL constructor doesn't like custom schemes
-        const accessToken = urlObj.searchParams.get('access_token');
-        const idToken = urlObj.searchParams.get('id_token');
+        try {
+          // URL constructor doesn't like custom schemes, so we normalize it
+          const normalizedUrl = url.replace('sonik://', 'http://sonik/');
+          const urlObj = new URL(normalizedUrl);
+          const accessToken = urlObj.searchParams.get('access_token');
+          const idToken = urlObj.searchParams.get('id_token');
 
-        if (idToken) {
-          try {
+          if (idToken) {
             const credential = GoogleAuthProvider.credential(idToken, accessToken || undefined);
             await signInWithCredential(auth, credential);
-            await Browser.close();
+            
+            // Close the browser if it's still open
+            try {
+              await Browser.close();
+            } catch (e) {
+              // Browser might already be closed
+            }
+            
             toast.success('Signed in with Google!');
-          } catch (error: any) {
-            console.error('Deep link auth error:', error);
-            toast.error('Authentication failed via deep link');
           }
+        } catch (error: any) {
+          console.error('Deep link auth error:', error);
+          toast.error('Authentication failed via deep link');
         }
       }
     };
@@ -3025,16 +3470,35 @@ export default function App() {
   };
 
   const handleDeleteSong = async (id: string) => {
-    if (!user?.isAdmin) return;
+    console.log("handleDeleteSong called with:", id);
+    if (!user?.isAdmin) {
+      console.log("handleDeleteSong: user is not admin");
+      toast.error("Only admins can delete songs");
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'songs', id));
       toast.success("Song deleted permanently");
       handleRefreshSongs();
-      if (currentSong?.id === id) {
-        setCurrentSong(null);
-        setIsPlaying(false);
+      
+      if (currentPlaylist) {
+        setCurrentPlaylist(prev => prev ? prev.filter(s => s.id !== id) : null);
       }
+
+      if (currentSong?.id === id) {
+        if (songs.length > 1) {
+          const currentIndex = songs.findIndex(s => s.id === id);
+          const nextIndex = (currentIndex + 1) % songs.length;
+          setCurrentSong(songs[nextIndex]);
+          setIsPlaying(true);
+        } else {
+          setCurrentSong(null);
+          setIsPlaying(false);
+        }
+      }
+      console.log("handleDeleteSong: success");
     } catch (error) {
+      console.error("Error deleting song:", error);
       toast.error("Failed to delete song");
     }
   };
@@ -3060,15 +3524,15 @@ export default function App() {
       
       // If subscription expired
       if (parsedUser.subscriptionEndsAt && parsedUser.subscriptionEndsAt < now) {
-        console.log("Subscription expired, logging out...");
+        console.log("Subscription expired, showing modal...");
         
         // Record expiry date if not already recorded
         if (!localStorage.getItem('sonik_expiry_date')) {
           localStorage.setItem('sonik_expiry_date', parsedUser.subscriptionEndsAt.toString());
         }
 
-        // Auto logout
-        handleLogout();
+        // Show modal instead of auto logout
+        setShowSubModal(true);
       } else {
         // Clear expiry date if subscription is active
         localStorage.removeItem('sonik_expiry_date');
@@ -3141,36 +3605,19 @@ export default function App() {
           const isAdminEmail = firebaseUser.email === 'indiafff568@gmail.com' || firebaseUser.email === 'gtxnvme@gmail.com';
 
           if (!userDoc.exists()) {
-            const thirtyDays = 30 * 24 * 60 * 60 * 1000;
             const userData = {
               email: firebaseUser.email || '',
-              subscription: 'pro',
-              subscriptionEndsAt: Date.now() + thirtyDays,
+              subscription: 'none',
               isAdmin: isAdminEmail,
               playlists: [],
               createdAt: serverTimestamp()
             };
             await setDoc(userDocRef, userData);
-            toast.success("Welcome! You've been granted a 30-day Pro trial.");
           } else {
             const data = userDoc.data();
             // Auto-grant admin privileges if not already set
             if (isAdminEmail && !data.isAdmin) {
               await updateDoc(userDocRef, { isAdmin: true });
-            }
-            
-            // Ensure subscription is active (Trial Fix)
-            let subEndsAt = data.subscriptionEndsAt;
-            if (subEndsAt && typeof subEndsAt === 'object' && 'toMillis' in subEndsAt) {
-              subEndsAt = subEndsAt.toMillis();
-            }
-            
-            if (!data.subscription || data.subscription === 'none' || !subEndsAt || subEndsAt < Date.now()) {
-              const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-              await updateDoc(userDocRef, { 
-                subscription: 'pro', 
-                subscriptionEndsAt: Date.now() + thirtyDays 
-              });
             }
           }
         } catch (error) {
@@ -3181,6 +3628,7 @@ export default function App() {
         userDocUnsubscribe = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
+            console.log("User data received from Firestore:", data);
             let subEndsAt = data.subscriptionEndsAt;
             if (subEndsAt && typeof subEndsAt === 'object' && 'toMillis' in subEndsAt) {
               subEndsAt = subEndsAt.toMillis();
@@ -3193,11 +3641,14 @@ export default function App() {
               subscriptionEndsAt: subEndsAt,
               isAdmin: data.isAdmin || false,
               playlists: data.playlists || [],
-              downloads: data.downloads || []
+              downloads: data.downloads || [],
+              profileColor: data.profileColor,
+              defaultVolume: data.defaultVolume ?? 0.5,
+              aiBoostMode: data.aiBoostMode || 'manual',
+              cleanAudio: data.cleanAudio ?? false
             };
 
             setUser(userData);
-            localStorage.setItem('sonik_user', JSON.stringify(userData));
           }
           setInitializing(false);
         }, (error) => {
@@ -3313,7 +3764,6 @@ export default function App() {
         };
         setUser(updatedUser);
         setShowSubModal(false);
-        toast.success(`Subscription updated to ${type.toUpperCase()}`);
       } catch (error) {
         console.error("Error updating subscription:", error);
         toast.error("Failed to update subscription");
@@ -3323,16 +3773,33 @@ export default function App() {
 
   const handleUpdateSettings = async (settings: Partial<User>) => {
     if (user) {
+      // Restriction: Plus users cannot enable AI features
+      if (user.subscription === 'plus') {
+        if (settings.aiBoostMode && settings.aiBoostMode !== 'off') {
+          toast.error("AI Boost is a Pro feature!");
+          return;
+        }
+        if (settings.cleanAudio === true) {
+          toast.error("Clean Audio is a Pro feature!");
+          return;
+        }
+      }
+
+      console.log("Updating settings in Firestore:", settings);
+      // Optimistic update
+      const previousUser = { ...user };
+      setUser({ ...user, ...settings });
+      
       try {
         const userDocRef = doc(db, 'users', user.id);
         await updateDoc(userDocRef, {
           ...settings,
           updatedAt: serverTimestamp()
         });
-        setUser({ ...user, ...settings });
-        toast.success("Settings updated");
+        console.log("Firestore update successful");
       } catch (error) {
-        console.error("Error updating settings:", error);
+        console.error("Error updating settings in Firestore:", error);
+        setUser(previousUser); // Rollback
         toast.error("Failed to update settings");
       }
     }
@@ -3521,7 +3988,7 @@ export default function App() {
     if (!user) return;
     try {
       const userDocRef = doc(db, 'users', user.id);
-      const updatedPlaylists = user.playlists.map(pl => {
+      const updatedPlaylists = (user.playlists || []).map(pl => {
         if (pl.id === playlistId) {
           return { ...pl, songs };
         }
@@ -3543,7 +4010,7 @@ export default function App() {
       return;
     }
     const isPro = user.subscription === 'pro';
-    const limit = isPro ? 10 : 2;
+    const limit = isPro ? 12 : 1;
 
     if (user.playlists.length >= limit) {
       toast.error(`Upgrade to Pro for more than ${limit} playlists!`);
@@ -3569,21 +4036,27 @@ export default function App() {
   };
 
   const handleDeletePlaylist = async (playlistId: string) => {
-    if (!user) return;
+    console.log("handleDeletePlaylist called with:", playlistId);
+    if (!user) {
+      console.log("handleDeletePlaylist: user not found");
+      return;
+    }
     try {
       const userDocRef = doc(db, 'users', user.id);
-      const updatedPlaylists = user.playlists.filter(pl => pl.id !== playlistId);
+      const updatedPlaylists = (user.playlists || []).filter(pl => pl.id !== playlistId);
       
       await updateDoc(userDocRef, { playlists: updatedPlaylists });
       setUser({ ...user, playlists: updatedPlaylists });
+      handleRefreshUser();
       toast.success("Playlist deleted");
+      console.log("handleDeletePlaylist: success");
     } catch (error) {
       console.error("Error deleting playlist:", error);
       toast.error("Failed to delete playlist");
     }
   };
 
-  const handlePlay = (song: Song) => {
+  const handlePlay = (song: Song, playlist?: Song[]) => {
     if (!user) return;
     
     if (!isSubscribed()) {
@@ -3593,21 +4066,81 @@ export default function App() {
     }
 
     setCurrentSong(song);
+    if (playlist) {
+      setCurrentPlaylist(playlist);
+    } else {
+      setCurrentPlaylist(null);
+    }
     setIsPlaying(true);
   };
 
   const handleNext = () => {
-    if (songs.length === 0) return;
-    const currentIndex = songs.findIndex(s => s.id === currentSong?.id);
-    const nextIndex = (currentIndex + 1) % songs.length;
-    setCurrentSong(songs[nextIndex]);
+    const queue = currentPlaylist && currentPlaylist.length > 0 ? currentPlaylist : songs;
+    if (queue.length === 0) {
+      if (currentPlaylist) {
+        setCurrentPlaylist(null);
+        if (songs.length > 0) {
+          setCurrentSong(songs[0]);
+          setIsPlaying(true);
+        } else {
+          setCurrentSong(null);
+          setIsPlaying(false);
+        }
+      } else {
+        setCurrentSong(null);
+        setIsPlaying(false);
+      }
+      return;
+    }
+    
+    const currentIndex = queue.findIndex(s => s.id === currentSong?.id);
+    
+    if (currentPlaylist && currentPlaylist.length > 0) {
+      // Check if this is an offline/downloads playlist
+      const isOfflinePlaylist = currentPlaylist.every(s => user?.downloads?.includes(s.id));
+
+      if (currentIndex === queue.length - 1 || currentIndex === -1) {
+        if (isOfflinePlaylist) {
+          // Loop back to the beginning for offline playlist
+          setCurrentSong(queue[0]);
+          setIsPlaying(true);
+        } else {
+          // Playlist ended or song not found in playlist, switch to global stream
+          setCurrentPlaylist(null);
+          if (songs.length > 0) {
+            // Play a random song from global stream
+            const nextGlobalIndex = Math.floor(Math.random() * songs.length);
+            setCurrentSong(songs[nextGlobalIndex]);
+            setIsPlaying(true);
+          } else {
+            setCurrentSong(null);
+            setIsPlaying(false);
+          }
+        }
+      } else {
+        const nextIndex = currentIndex + 1;
+        setCurrentSong(queue[nextIndex]);
+        setIsPlaying(true);
+      }
+    } else {
+      const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % queue.length;
+      setCurrentSong(queue[nextIndex]);
+      setIsPlaying(true);
+    }
   };
 
   const handlePrev = () => {
-    if (songs.length === 0) return;
-    const currentIndex = songs.findIndex(s => s.id === currentSong?.id);
-    const prevIndex = (currentIndex - 1 + songs.length) % songs.length;
-    setCurrentSong(songs[prevIndex]);
+    const queue = currentPlaylist && currentPlaylist.length > 0 ? currentPlaylist : songs;
+    if (queue.length === 0) {
+      setCurrentSong(null);
+      setIsPlaying(false);
+      return;
+    }
+    
+    const currentIndex = queue.findIndex(s => s.id === currentSong?.id);
+    const prevIndex = currentIndex === -1 ? 0 : (currentIndex - 1 + queue.length) % queue.length;
+    setCurrentSong(queue[prevIndex]);
+    setIsPlaying(true);
   };
 
   const handleRefreshUser = async () => {
@@ -3623,7 +4156,11 @@ export default function App() {
           subscriptionEndsAt: data.subscriptionEndsAt,
           isAdmin: data.isAdmin,
           playlists: data.playlists || [],
-          downloads: data.downloads || []
+          downloads: data.downloads || [],
+          defaultVolume: data.defaultVolume ?? user.defaultVolume ?? 0.5,
+          aiBoostMode: data.aiBoostMode || user.aiBoostMode || 'manual',
+          cleanAudio: data.cleanAudio ?? user.cleanAudio ?? false,
+          profileColor: data.profileColor || user.profileColor
         });
       }
     } catch (error) {
@@ -3690,7 +4227,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar user={user} onLogout={handleLogout} />
         
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto no-scrollbar">
           <MobileHeader user={user} />
           <Routes>
             <Route path="/" element={<HomePage onPlay={handlePlay} user={user} songs={songs} loadingSongs={loadingSongs} onAddToPlaylist={handleOpenPlaylistModal} onDeleteSong={handleDeleteSong} />} />
@@ -3705,6 +4242,11 @@ export default function App() {
                 onRefreshUser={handleRefreshUser} 
                 onDeleteSong={handleDeleteSong}
                 onDeletePlaylist={handleDeletePlaylist}
+                currentSong={currentSong}
+                onStop={() => {
+                  setCurrentSong(null);
+                  setIsPlaying(false);
+                }}
               />
             } />
             <Route path="/downloads" element={<DownloadsPage user={user} onPlay={handlePlay} songs={songs} onDownload={handleDownloadToApp} onRemoveDownload={handleRemoveDownload} onAddToPlaylist={handleOpenPlaylistModal} onDeleteSong={handleDeleteSong} />} />
@@ -3721,6 +4263,10 @@ export default function App() {
         onNext={handleNext}
         onPrev={handlePrev}
         onClose={() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.metadata = null;
+            navigator.mediaSession.playbackState = 'none';
+          }
           setCurrentSong(null);
           setIsPlaying(false);
         }}
@@ -3733,8 +4279,13 @@ export default function App() {
       <MobileNav />
 
       <AnimatePresence>
-        {showSubModal && (
-          <SubscriptionModal onLogout={handleLogout} onRefresh={handleRefreshUser} />
+        {showSubModal && user && (
+          <SubscriptionModal 
+            user={user}
+            onLogout={handleLogout} 
+            onRefresh={handleRefreshUser} 
+            onUpdateSub={handleUpdateSub}
+          />
         )}
         {showPlaylistModal && selectedSongForPlaylist && (
           <PlaylistModal 

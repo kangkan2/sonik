@@ -13,8 +13,12 @@ const __dirname = path.dirname(__filename);
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "http://localhost:3000/api/auth/google/callback"
+  process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "music-b3be5.web.app"
 );
+
+if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+  console.warn("WARNING: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is not set. Google Sign-In will not work.");
+}
 
 async function startServer() {
   const app = express();
