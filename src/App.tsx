@@ -1370,7 +1370,8 @@ const LoginPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
     try {
       if (Capacitor.isNativePlatform()) {
         // Use Capacitor Browser for native platforms
-        const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+        // Fallback to production domain if VITE_APP_URL is not set
+        const baseUrl = import.meta.env.VITE_APP_URL || "https://music-b3be5.web.app";
         const authUrl = `${baseUrl}/api/auth/google`;
         await Browser.open({ url: authUrl, windowName: '_self' });
       } else {
