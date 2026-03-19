@@ -1,11 +1,11 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
+import { getAuth } from "firebase/auth";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAXw6LdRFL3iM_e97amJDrVEzfuyYC9N6w",
-  authDomain: "music-b3be5.web.app",
+  authDomain: "music-b3be5.firebaseapp.com",
   projectId: "music-b3be5",
   storageBucket: "music-b3be5.firebasestorage.app",
   messagingSenderId: "593321664127",
@@ -14,8 +14,6 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-
-export { RecaptchaVerifier, signInWithPhoneNumber };
 
 // Use initializeFirestore with persistent local cache for offline support
 export const db = initializeFirestore(app, {
